@@ -101,10 +101,22 @@ public static class ArtNetText
         bool ok = t.StartsWith("0x", StringComparison.OrdinalIgnoreCase)
             ? ulong.TryParse(t.AsSpan(2), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out n)
             : ulong.TryParse(t, NumberStyles.Integer, CultureInfo.InvariantCulture, out n);
-        if (!ok) return false;
+        if (!ok || n > MaxRawValue<T>()) return false; // e.g. 300 for a byte enum would silently wrap
         value = (T)Enum.ToObject(typeof(T), n);
         return true;
     }
+
+    private static ulong MaxRawValue<T>() where T : struct, Enum => Type.GetTypeCode(Enum.GetUnderlyingType(typeof(T))) switch
+    {
+        TypeCode.Byte => byte.MaxValue,
+        TypeCode.SByte => (ulong)sbyte.MaxValue,
+        TypeCode.UInt16 => ushort.MaxValue,
+        TypeCode.Int16 => (ulong)short.MaxValue,
+        TypeCode.UInt32 => uint.MaxValue,
+        TypeCode.Int32 => int.MaxValue,
+        TypeCode.Int64 => long.MaxValue,
+        _ => ulong.MaxValue,
+    };
 
     private static string Normalize(string s)
     {
@@ -481,6 +493,6 @@ public static class ArtNetText
         string[] bqp = ["STATUS_NONE", "STATUS_ADVISORY", "STATUS_WARNING", "STATUS_ERROR", "disabled"];
         for (int i = 0; i < 16; i++)
             Add((ArtNetAddressCommand)(0xE0 + i), $"Background Queue Policy {i}",
-                i < bqp.Length ? $"Set BackgroundQueuePolicy to {i} ({bqp[i]})." : $"Set BackgroundQueuePolicy to {i} (user defined).");
+                i < bqp.Length ? $"Set BackgroundQueuePolicy to {i} ({bqp[i]})." : $"Set BackgroundQueuePolicy to {i} (manufacturer defined).");
     }
 }

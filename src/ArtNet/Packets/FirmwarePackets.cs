@@ -9,7 +9,8 @@ public sealed class ArtFirmwareMasterPacket : ArtNetPacket
     public const int DataOffset = 40;
     public const int DataBytes = ArtNetConstants.FirmwareBlockWords * 2;
     public const int FullSize = DataOffset + DataBytes;
-    public const int MinSize = DataOffset;
+    /// <summary>A block is always sent in full; a shorter datagram is rejected rather than zero-padded.</summary>
+    public const int MinSize = FullSize;
 
     public override ArtNetOpCode OpCode => ArtNetOpCode.FirmwareMaster;
     public override int Size => FullSize;

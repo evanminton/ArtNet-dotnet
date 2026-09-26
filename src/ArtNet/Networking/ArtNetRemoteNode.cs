@@ -111,7 +111,17 @@ public sealed class ArtNetRemoteNode : INotifyPropertyChanged
         OnPropertyChanged(name);
     }
 
-    private void OnPropertyChanged(string? name) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+    /// <summary>Context <see cref="PropertyChanged"/> is posted to (the node's <see cref="ArtNetNodeSettings.EventContext"/>).</summary>
+    internal SynchronizationContext? EventContext { get; init; }
+
+    private void OnPropertyChanged(string? name)
+    {
+        var handler = PropertyChanged;
+        if (handler is null) return;
+        var args = new PropertyChangedEventArgs(name);
+        if (EventContext is { } ctx) ctx.Post(_ => handler(this, args), null);
+        else handler(this, args);
+    }
 
     public override string ToString() =>
         $"{DisplayName} ({LongName}) {AddressText} · {StyleName} · {UniversesText} · {NodeReportText}";

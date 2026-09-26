@@ -73,14 +73,17 @@ public sealed class DmxPage : ContentPage
     {
         var universe = Ui.Entry(_service.MonitorAddress.Value.ToString(), "universe", 120);
         var status = Ui.Caption();
-        var subscribe = Ui.Switch("Subscribe (announce an output port so controllers unicast this universe to us)", false, async on =>
+        var subscribe = Ui.Switch("Subscribe (announce an output port so controllers unicast this universe to us)", _service.MonitorPort is not null, async on =>
         {
             try
             {
                 var node = _service.RequireNode();
                 var a = Ui.ParseUniverse(universe);
-                node.Settings.Ports.RemoveAll(p => p.Name == "Monitor");
-                if (on) node.Settings.Ports.Add(ArtNetPortConfig.Output(a, "Monitor"));
+                _service.MonitorPort = on ? a : null; // re-added by the service when the node restarts
+                // Replace the list rather than mutating it: the node reads it on network threads.
+                var ports = node.Settings.Ports.Where(p => p.Name != "Monitor").ToList();
+                if (on) ports.Add(ArtNetPortConfig.Output(a, "Monitor"));
+                node.Settings.Ports = ports;
                 await node.NotifyChangedAsync();
                 status.Text = on ? $"Announcing an output port for universe {a}." : "Monitor port removed.";
             }
@@ -142,7 +145,8 @@ public sealed class DmxPage : ContentPage
         slider.ValueChanged += async (_, e) =>
         {
             byte v = (byte)Math.Round(e.NewValue);
-            levelLabel.Text = $"{v} ({ArtNetText.Percent(v)}%)";
+            var percent = ArtNetText.Percent(v);
+            levelLabel.Text = v == 255 ? $"{v} ({percent})" : $"{v} ({percent}%)";
             try
             {
                 var (first, last) = Channels();

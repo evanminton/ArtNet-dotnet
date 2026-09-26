@@ -10,7 +10,7 @@ public readonly record struct PortAddress : IComparable<PortAddress>, ISpanForma
 {
     private readonly ushort _value;
 
-    /// <summary>Creates a Port-Address from its 15-bit value (bit 15 is ignored).</summary>
+    /// <summary>Creates a Port-Address from its 15-bit value (0-32767; larger values throw).</summary>
     public PortAddress(int value)
     {
         if (value is < 0 or > ArtNetConstants.MaxPortAddress)

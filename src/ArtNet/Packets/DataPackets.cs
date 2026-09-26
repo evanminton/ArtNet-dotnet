@@ -10,7 +10,7 @@ public sealed class ArtDmxPacket : ArtNetPacket
     public const int MinSize = 18;
 
     public override ArtNetOpCode OpCode => ArtNetOpCode.Dmx;
-    public override int Size => HeaderSize + Data.Length;
+    public override int Size => HeaderSize + WireLength(_data.Length);
 
     /// <summary>1-255 incrementing to allow re-sequencing; 0 disables the feature.</summary>
     public byte Sequence { get; set; }
@@ -44,14 +44,25 @@ public sealed class ArtDmxPacket : ArtNetPacket
         return b;
     }
 
+    /// <summary>Even length in 2-512 written for <paramref name="length"/> data bytes.</summary>
+    private static int WireLength(int length)
+    {
+        int len = Math.Clamp(length, 2, ArtNetConstants.DmxChannels);
+        return (len & 1) != 0 ? len + 1 : len;
+    }
+
     protected override void WriteBody(Span<byte> p)
     {
         p[12] = Sequence;
         p[13] = Physical;
         p[14] = PortAddress.SubUni;
         p[15] = PortAddress.Net;
-        Bin.U16BE(p, 16, (ushort)_data.Length);
-        _data.CopyTo(p[HeaderSize..]);
+        // A received packet keeps its data as it arrived; what is sent is always a valid (even, 2-512) length.
+        int len = WireLength(_data.Length);
+        Bin.U16BE(p, 16, (ushort)len);
+        var body = p.Slice(HeaderSize, len);
+        body.Clear();
+        _data.AsSpan(0, Math.Min(_data.Length, len)).CopyTo(body);
     }
 
     protected override void ReadBody(ReadOnlySpan<byte> p)
@@ -192,8 +203,13 @@ public sealed class ArtVlcPacket : ArtNzsPacket
     /// <summary>Target slot 1-512; 0 = all devices on this Port-Address.</summary>
     public ushort SlotAddress { get; set; }
 
-    /// <summary>Unsigned 16-bit additive checksum of the payload (computed when writing).</summary>
-    public ushort PayloadChecksum { get; private set; }
+    private ushort? _receivedChecksum;
+
+    /// <summary>
+    /// Unsigned 16-bit additive checksum of the payload: the value received for a parsed packet (until the payload
+    /// changes), otherwise the computed one. Writing always emits the computed checksum.
+    /// </summary>
+    public ushort PayloadChecksum => _receivedChecksum ?? ComputeChecksum();
 
     /// <summary>Modulation depth 1-100 %; 0 = transmitter default.</summary>
     public byte Depth { get; set; }
@@ -215,7 +231,11 @@ public sealed class ArtVlcPacket : ArtNzsPacket
     public byte[] Payload
     {
         get => _payload;
-        set => _payload = value is { Length: > ArtNetConstants.MaxVlcPayload } ? value[..ArtNetConstants.MaxVlcPayload] : value ?? [];
+        set
+        {
+            _payload = value is { Length: > ArtNetConstants.MaxVlcPayload } ? value[..ArtNetConstants.MaxVlcPayload] : value ?? [];
+            _receivedChecksum = null;
+        }
     }
 
     /// <summary>Payload as text (BeaconUrl / BeaconText).</summary>
@@ -258,7 +278,6 @@ public sealed class ArtVlcPacket : ArtNzsPacket
 
     protected override void WriteData(Span<byte> d)
     {
-        PayloadChecksum = ComputeChecksum();
         d[0] = ArtNetConstants.VlcManIdHi;
         d[1] = ArtNetConstants.VlcManIdLo;
         d[2] = ArtNetConstants.VlcSubCode;
@@ -266,7 +285,7 @@ public sealed class ArtVlcPacket : ArtNzsPacket
         Bin.U16BE(d, 4, Transaction);
         Bin.U16BE(d, 6, SlotAddress);
         Bin.U16BE(d, 8, (ushort)_payload.Length);
-        Bin.U16BE(d, 10, PayloadChecksum);
+        Bin.U16BE(d, 10, ComputeChecksum());
         d[12] = 0;
         d[13] = Depth;
         Bin.U16BE(d, 14, Frequency);
@@ -282,13 +301,14 @@ public sealed class ArtVlcPacket : ArtNzsPacket
         Transaction = Bin.U16BE(d, 4);
         SlotAddress = Bin.U16BE(d, 6);
         int count = Math.Min((int)Bin.U16BE(d, 8), ArtNetConstants.MaxVlcPayload);
-        PayloadChecksum = Bin.U16BE(d, 10);
+        ushort checksum = Bin.U16BE(d, 10);
         Depth = Bin.U8(d, 13);
         Frequency = Bin.U16BE(d, 14);
         Modulation = Bin.U16BE(d, 16);
         PayloadLanguage = (ArtVlcPayloadLanguage)Bin.U16BE(d, 18);
         BeaconRepeat = Bin.U16BE(d, 20);
         _payload = Bin.Bytes(d, VlcHeaderSize, count);
+        _receivedChecksum = checksum;
     }
 
     protected override void DescribeBody(List<ArtNetField> f)

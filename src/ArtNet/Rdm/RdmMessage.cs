@@ -23,6 +23,9 @@ public sealed record RdmMessage(
     /// <summary>Bytes before the parameter data (excluding the 0xCC start code).</summary>
     public const int HeaderSize = 23;
 
+    /// <summary>Maximum parameter data length (E1.20).</summary>
+    public const int MaxParameterData = 231;
+
     public bool IsResponse => CommandClass is RdmCommandClass.GetResponse or RdmCommandClass.SetResponse or RdmCommandClass.DiscoveryResponse;
 
     public string ResponseTypeText => IsResponse ? RdmText.ResponseType(PortIdOrResponseType) : $"Port {PortIdOrResponseType}";
@@ -38,7 +41,8 @@ public sealed record RdmMessage(
         message = null!;
         if (data.Length < HeaderSize || data[0] != SubStartCode) return false;
         int pdl = data[22];
-        if (data.Length < HeaderSize + pdl) return false;
+        // Message length (data[1]) counts the 0xCC start code, the header and the parameter data (max 231).
+        if (pdl > MaxParameterData || data[1] != HeaderSize + 1 + pdl || data.Length < HeaderSize + pdl) return false;
         ushort checksum = data.Length >= HeaderSize + pdl + 2 ? Bin.U16BE(data, HeaderSize + pdl) : (ushort)0;
         message = new RdmMessage(
             RdmUid.Read(data[2..8]),
@@ -67,7 +71,7 @@ public sealed record RdmMessage(
     public static byte[] Build(RdmUid destination, RdmUid source, byte transactionNumber, byte portId, ushort subDevice,
         RdmCommandClass commandClass, ushort parameterId, ReadOnlySpan<byte> parameterData = default, byte messageCount = 0)
     {
-        if (parameterData.Length > 231) throw new ArgumentException("RDM parameter data is limited to 231 bytes.", nameof(parameterData));
+        if (parameterData.Length > MaxParameterData) throw new ArgumentException("RDM parameter data is limited to 231 bytes.", nameof(parameterData));
         var b = new byte[HeaderSize + parameterData.Length + 2];
         b[0] = SubStartCode;
         b[1] = (byte)(24 + parameterData.Length); // message length includes the start code, excludes the checksum

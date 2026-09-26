@@ -28,6 +28,8 @@ public sealed class ArtNetNode : IAsyncDisposable, IDisposable
         public byte Physical;
         public DateTime LastSent;
         public int LastTargets;
+        /// <summary>Serialises build + send so keep-alive frames never overtake newer frames on the wire.</summary>
+        public readonly SemaphoreSlim SendGate = new(1, 1);
     }
 
     private sealed class Waiter(Func<ArtNetPacket, IPEndPoint, bool> match)
@@ -47,6 +49,10 @@ public sealed class ArtNetNode : IAsyncDisposable, IDisposable
     private readonly List<Waiter> _waiters = [];
     private readonly List<Task> _loops = [];
     private readonly object _stateLock = new();
+    private readonly object _syncLock = new();
+    private readonly object _lifecycleLock = new();
+    private readonly object _pollReplyLock = new();
+    private readonly AsyncLocal<bool> _inLoop = new();
     private HashSet<IPAddress> _localAddresses = [];
     private Socket? _socket;
     private CancellationTokenSource? _cts;
@@ -63,7 +69,11 @@ public sealed class ArtNetNode : IAsyncDisposable, IDisposable
 
     public ArtNetNode(ArtNetNodeSettings? settings = null) => Settings = settings ?? new ArtNetNodeSettings();
 
-    /// <summary>Settings. Names and ports may be changed while running; call <see cref="NotifyChangedAsync"/> afterwards.</summary>
+    /// <summary>
+    /// Settings. Names and ports may be changed while running; call <see cref="NotifyChangedAsync"/> afterwards.
+    /// Replace entries of <see cref="ArtNetNodeSettings.Ports"/> rather than adding or removing them from another
+    /// thread while the node is receiving; the node reads a snapshot of the list.
+    /// </summary>
     public ArtNetNodeSettings Settings { get; }
 
     public bool IsRunning => _cts is { IsCancellationRequested: false };
@@ -85,7 +95,7 @@ public sealed class ArtNetNode : IAsyncDisposable, IDisposable
     public IReadOnlyList<PortAddress> OutputUniverses => _outputs.Keys.OrderBy(a => a).ToArray();
 
     /// <summary>True while ArtSync is being honoured (an ArtSync arrived within the last 4 s).</summary>
-    public bool IsSynchronous => _syncActive;
+    public bool IsSynchronous => _syncActive && DateTime.UtcNow - _lastSync < ArtNetConstants.SyncTimeout;
 
     public ArtNetIndicatorState IndicatorState => _indicator;
     public ArtNetFailsafeState FailsafeState => _failsafe;
@@ -139,9 +149,19 @@ public sealed class ArtNetNode : IAsyncDisposable, IDisposable
     /// <summary>Opens the socket on UDP 6454, starts receiving, polling and keep-alive.</summary>
     public Task StartAsync(CancellationToken cancellationToken = default)
     {
-        if (IsRunning) return Task.CompletedTask;
         cancellationToken.ThrowIfCancellationRequested();
+        if (Settings.PollInterval <= TimeSpan.Zero)
+            throw new InvalidOperationException("Settings.PollInterval must be greater than zero.");
+        lock (_lifecycleLock)
+        {
+            if (_cts is not null) return Task.CompletedTask;
+            Start();
+        }
+        return Task.CompletedTask;
+    }
 
+    private void Start()
+    {
         _localAddresses = GetLocalAddresses();
         Interface = Settings.LocalAddress.Equals(IPAddress.Any)
             ? ArtNetNetworkInterface.GetDefault()
@@ -155,21 +175,32 @@ public sealed class ArtNetNode : IAsyncDisposable, IDisposable
         _loops.Add(Task.Run(() => ReceiveLoopAsync(socket, token), CancellationToken.None));
         _loops.Add(Task.Run(() => PollLoopAsync(token), CancellationToken.None));
         _loops.Add(Task.Run(() => KeepAliveLoopAsync(token), CancellationToken.None));
-        return Task.CompletedTask;
     }
 
-    /// <summary>Stops the loops, closes the socket and clears the node list.</summary>
+    /// <summary>
+    /// Stops the loops, closes the socket and clears the node list. Safe to call from an event handler raised on a
+    /// network thread: the loops are then cancelled but not awaited.
+    /// </summary>
     public async Task StopAsync()
     {
-        var cts = _cts;
-        if (cts is null) return;
-        cts.Cancel();
-        _socket?.Dispose();
-        _socket = null;
-        try { await Task.WhenAll(_loops).ConfigureAwait(false); } catch { /* loops end on dispose */ }
-        _loops.Clear();
-        _cts = null;
-        cts.Dispose();
+        CancellationTokenSource cts;
+        Task[] loops;
+        lock (_lifecycleLock)
+        {
+            if (_cts is null) return;
+            cts = _cts;
+            cts.Cancel();
+            _socket?.Dispose();
+            _socket = null;
+            loops = [.. _loops];
+            _loops.Clear();
+            _cts = null;
+        }
+        if (!_inLoop.Value)
+        {
+            try { await Task.WhenAll(loops).ConfigureAwait(false); } catch { /* loops end on dispose */ }
+            cts.Dispose(); // only once no loop can still observe the token
+        }
 
         lock (_waiters)
         {
@@ -178,8 +209,11 @@ public sealed class ArtNetNode : IAsyncDisposable, IDisposable
         }
         foreach (var n in _nodes.Values) Raise(NodeLost, new ArtNetNodeEventArgs(n));
         _nodes.Clear();
-        _pendingSync.Clear();
-        _syncActive = false;
+        lock (_syncLock)
+        {
+            _pendingSync.Clear();
+            _syncActive = false;
+        }
     }
 
     public async ValueTask DisposeAsync() => await StopAsync().ConfigureAwait(false);
@@ -248,9 +282,9 @@ public sealed class ArtNetNode : IAsyncDisposable, IDisposable
     {
         var local = ReplyAddressFor(requester);
         var mac = Settings.MacAddress ?? Interface?.Mac ?? new byte[6];
-        var ports = Settings.Ports;
+        var ports = PortsSnapshot();
         var list = new List<ArtPollReplyPacket>();
-        int count = Math.Max(1, ports.Count);
+        int count = Math.Max(1, ports.Length);
         for (int i = 0; i < count; i++)
         {
             var r = new ArtPollReplyPacket
@@ -274,7 +308,7 @@ public sealed class ArtNetNode : IAsyncDisposable, IDisposable
                 FailsafeState = _failsafe,
             };
             if (mac.Length >= 6) mac.AsSpan(0, 6).CopyTo(r.Mac);
-            if (i < ports.Count)
+            if (i < ports.Length)
             {
                 var port = ports[i];
                 if (!string.IsNullOrEmpty(port.Name)) r.ShortName = port.Name;
@@ -338,6 +372,20 @@ public sealed class ArtNetNode : IAsyncDisposable, IDisposable
         }
     }
 
+    /// <summary>Fire-and-forget variant for network threads: never faults (the node may be stopping).</summary>
+    private async Task NotifyChangedSafeAsync()
+    {
+        try { await NotifyChangedAsync().ConfigureAwait(false); }
+        catch (Exception ex) when (ex is ObjectDisposedException or InvalidOperationException) { }
+        catch (Exception ex) { RaiseError(ex); }
+    }
+
+    /// <summary>Copy of <see cref="ArtNetNodeSettings.Ports"/> for reading on network threads.</summary>
+    private ArtNetPortConfig[] PortsSnapshot()
+    {
+        lock (_stateLock) return [.. Settings.Ports];
+    }
+
     /// <summary>Sets the NodeReport code and text reported in ArtPollReply.</summary>
     public void SetNodeReport(ArtNetNodeReportCode code, string? text = null)
     {
@@ -354,16 +402,21 @@ public sealed class ArtNetNode : IAsyncDisposable, IDisposable
     public async Task<int> SendDmxAsync(PortAddress address, ReadOnlyMemory<byte> data, byte physical = 0, CancellationToken cancellationToken = default)
     {
         var o = _outputs.GetOrAdd(address, _ => new OutputUniverse());
-        ArtDmxPacket packet;
-        lock (o)
+        await o.SendGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
         {
-            int n = Math.Min(data.Length, ArtNetConstants.DmxChannels);
-            data.Span[..n].CopyTo(o.Data);
-            o.Data.AsSpan(n).Clear();
-            o.Physical = physical;
-            packet = NextPacket(address, o, n);
+            ArtDmxPacket packet;
+            lock (o)
+            {
+                int n = Math.Min(data.Length, ArtNetConstants.DmxChannels);
+                data.Span[..n].CopyTo(o.Data);
+                o.Data.AsSpan(n).Clear();
+                o.Physical = physical;
+                packet = NextPacket(address, o, n);
+            }
+            return await SendDmxPacketAsync(packet, o, cancellationToken).ConfigureAwait(false);
         }
-        return await SendDmxPacketAsync(packet, o, cancellationToken).ConfigureAwait(false);
+        finally { o.SendGate.Release(); }
     }
 
     /// <summary>Changes channels of the remembered output frame and sends it. <paramref name="startChannel"/> is 1-based.</summary>
@@ -371,14 +424,19 @@ public sealed class ArtNetNode : IAsyncDisposable, IDisposable
     {
         if (startChannel < 1 || startChannel > ArtNetConstants.DmxChannels) throw new ArgumentOutOfRangeException(nameof(startChannel));
         var o = _outputs.GetOrAdd(address, _ => new OutputUniverse());
-        ArtDmxPacket packet;
-        lock (o)
+        await o.SendGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
         {
-            int n = Math.Min(levels.Length, ArtNetConstants.DmxChannels - startChannel + 1);
-            levels.Span[..n].CopyTo(o.Data.AsSpan(startChannel - 1));
-            packet = NextPacket(address, o, ArtNetConstants.DmxChannels);
+            ArtDmxPacket packet;
+            lock (o)
+            {
+                int n = Math.Min(levels.Length, ArtNetConstants.DmxChannels - startChannel + 1);
+                levels.Span[..n].CopyTo(o.Data.AsSpan(startChannel - 1));
+                packet = NextPacket(address, o, ArtNetConstants.DmxChannels);
+            }
+            return await SendDmxPacketAsync(packet, o, cancellationToken).ConfigureAwait(false);
         }
-        return await SendDmxPacketAsync(packet, o, cancellationToken).ConfigureAwait(false);
+        finally { o.SendGate.Release(); }
     }
 
     /// <summary>Copy of the frame this node transmits for a universe (512 zeros if none).</summary>
@@ -403,13 +461,22 @@ public sealed class ArtNetNode : IAsyncDisposable, IDisposable
         };
     }
 
+    /// <summary>
+    /// Sends to every target even when one fails (e.g. an unreachable static target); the first failure is rethrown
+    /// afterwards. Caller holds <see cref="OutputUniverse.SendGate"/>.
+    /// </summary>
     private async Task<int> SendDmxPacketAsync(ArtDmxPacket packet, OutputUniverse o, CancellationToken ct)
     {
         var targets = DmxTargets(packet.PortAddress);
+        Exception? first = null;
         foreach (var t in targets)
-            await SendAsync(packet, t, ct).ConfigureAwait(false);
+        {
+            try { await SendAsync(packet, t, ct).ConfigureAwait(false); }
+            catch (Exception ex) when (ex is not OperationCanceledException) { first ??= ex; }
+        }
         o.LastSent = DateTime.UtcNow;
         o.LastTargets = targets.Count;
+        if (first is not null) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(first);
         return targets.Count;
     }
 
@@ -459,10 +526,18 @@ public sealed class ArtNetNode : IAsyncDisposable, IDisposable
             timeout, cancellationToken).ConfigureAwait(false) as ArtPollReplyPacket;
     }
 
-    /// <summary>Sends ArtIpProg and waits for ArtIpProgReply (null when the node does not support it).</summary>
-    public async Task<ArtIpProgReplyPacket?> SendIpProgAsync(IPAddress node, ArtIpProgPacket packet, TimeSpan? timeout = null, CancellationToken cancellationToken = default) =>
-        await RequestAsync(packet, new IPEndPoint(node, Settings.Port),
-            (p, from) => p is ArtIpProgReplyPacket && from.Address.Equals(node), timeout, cancellationToken).ConfigureAwait(false) as ArtIpProgReplyPacket;
+    /// <summary>
+    /// Sends ArtIpProg and waits for ArtIpProgReply (null when the node does not support it). The reply is accepted
+    /// from the old address or, when an IP is being programmed, from the new one.
+    /// </summary>
+    public async Task<ArtIpProgReplyPacket?> SendIpProgAsync(IPAddress node, ArtIpProgPacket packet, TimeSpan? timeout = null, CancellationToken cancellationToken = default)
+    {
+        var newIp = packet.Command.HasFlag(ArtIpProgCommand.EnableProgramming) && packet.Command.HasFlag(ArtIpProgCommand.ProgramIp)
+            ? packet.ProgIp : null;
+        return await RequestAsync(packet, new IPEndPoint(node, Settings.Port),
+            (p, from) => p is ArtIpProgReplyPacket && (from.Address.Equals(node) || (newIp is not null && from.Address.Equals(newIp))),
+            timeout, cancellationToken).ConfigureAwait(false) as ArtIpProgReplyPacket;
+    }
 
     /// <summary>Sends ArtDataRequest and waits for ArtDataReply.</summary>
     public async Task<ArtDataReplyPacket?> RequestDataAsync(IPAddress node, ushort request, TimeSpan? timeout = null, CancellationToken cancellationToken = default)
@@ -629,6 +704,7 @@ public sealed class ArtNetNode : IAsyncDisposable, IDisposable
 
     private async Task ReceiveLoopAsync(Socket socket, CancellationToken ct)
     {
+        _inLoop.Value = true;
         var buffer = new byte[65536];
         EndPoint any = new IPEndPoint(IPAddress.Any, 0);
         while (!ct.IsCancellationRequested)
@@ -712,9 +788,18 @@ public sealed class ArtNetNode : IAsyncDisposable, IDisposable
         byte bind = Math.Max((byte)1, reply.BindIndex);
         var key = (from.Address, bind);
         bool isNew = false;
-        var node = _nodes.GetOrAdd(key, k => { isNew = true; return new ArtNetRemoteNode(k.Address, k.Bind) { IsLocal = local }; });
-        bool changed = node.Update(reply);
-        node.LastSeen = DateTime.UtcNow;
+        ArtNetRemoteNode node;
+        bool changed;
+        lock (_pollReplyLock) // InjectDatagram may run beside the receive loop
+        {
+            node = _nodes.GetOrAdd(key, k =>
+            {
+                isNew = true;
+                return new ArtNetRemoteNode(k.Address, k.Bind) { IsLocal = local, EventContext = Settings.EventContext };
+            });
+            changed = node.Update(reply);
+            node.LastSeen = DateTime.UtcNow;
+        }
         if (isNew) Raise(NodeDiscovered, new ArtNetNodeEventArgs(node));
         else if (changed) Raise(NodeUpdated, new ArtNetNodeEventArgs(node));
         return node;
@@ -763,13 +848,30 @@ public sealed class ArtNetNode : IAsyncDisposable, IDisposable
         _lastDmxSource = from.Address;
 
         var args = new ArtNetUniverseEventArgs(address, output, universe.Sources, merging, false);
-        if (_syncActive && !merging && DateTime.UtcNow - _lastSync < ArtNetConstants.SyncTimeout)
-            _pendingSync[address] = args;
-        else
-            Raise(UniverseChanged, args);
+        lock (_syncLock)
+        {
+            // Leave synchronous mode here too (not only in the keep-alive loop) so a buffered frame is never
+            // released after a newer one.
+            ExpireSync(DateTime.UtcNow);
+            if (_syncActive && !merging)
+                _pendingSync[address] = args;
+            else
+            {
+                _pendingSync.TryRemove(address, out _); // superseded
+                Raise(UniverseChanged, args);
+            }
+        }
 
-        if (merging != wasMerging && Settings.Ports.Any(p => p.Kind == ArtNetPortKind.Output && p.Address == address))
-            _ = NotifyChangedAsync();
+        if (merging != wasMerging && PortsSnapshot().Any(p => p.Kind == ArtNetPortKind.Output && p.Address == address))
+            _ = NotifyChangedSafeAsync();
+    }
+
+    /// <summary>Returns to non-synchronous mode when no ArtSync arrived for 4 s. Caller holds <see cref="_syncLock"/>.</summary>
+    private void ExpireSync(DateTime now)
+    {
+        if (!_syncActive || now - _lastSync < ArtNetConstants.SyncTimeout) return;
+        _syncActive = false;
+        FlushPendingSync(false);
     }
 
     private void HandleSync(IPEndPoint from)
@@ -778,9 +880,12 @@ public sealed class ArtNetNode : IAsyncDisposable, IDisposable
         // Ignore ArtSync from a controller other than the one that sent the most recent ArtDmx, and while merging.
         if (_lastDmxSource is not null && !_lastDmxSource.Equals(from.Address)) return;
         if (_universes.Values.Any(u => u.IsMerging)) return;
-        _syncActive = true;
-        _lastSync = DateTime.UtcNow;
-        FlushPendingSync(true);
+        lock (_syncLock)
+        {
+            _syncActive = true;
+            _lastSync = DateTime.UtcNow;
+            FlushPendingSync(true);
+        }
     }
 
     private void FlushPendingSync(bool synchronous)
@@ -793,7 +898,7 @@ public sealed class ArtNetNode : IAsyncDisposable, IDisposable
     }
 
     private ArtNetMergeMode MergeModeFor(PortAddress address) =>
-        Settings.Ports.FirstOrDefault(p => p.Kind == ArtNetPortKind.Output && p.Address == address)?.MergeMode ?? Settings.DefaultMergeMode;
+        PortsSnapshot().FirstOrDefault(p => p.Kind == ArtNetPortKind.Output && p.Address == address)?.MergeMode ?? Settings.DefaultMergeMode;
 
     /// <summary>Received state of a universe, or null if nothing arrived for it.</summary>
     public ArtNetUniverse? GetUniverse(PortAddress address) => _universes.TryGetValue(address, out var u) ? u : null;
@@ -806,14 +911,18 @@ public sealed class ArtNetNode : IAsyncDisposable, IDisposable
     {
         if (!Settings.AcceptRemoteProgramming) return;
         int portIndex = PortIndexForBind(p.BindIndex);
-        bool hasPort = portIndex < Settings.Ports.Count;
         bool changed = false;
+        ArtNetUniverse? cleared = null;
         lock (_stateLock)
         {
+            bool hasPort = portIndex < Settings.Ports.Count;
+            if (!hasPort && portIndex > 0) return; // addressed to a bind this node does not have
             if (p.ShortName.Length > 0)
             {
-                if (hasPort && portIndex > 0) Settings.Ports[portIndex] = Settings.Ports[portIndex] with { Name = p.ShortName };
-                else Settings.ShortName = p.ShortName;
+                // Bind 1 is the root device: its name is Settings.ShortName, but a port name overrides it in ArtPollReply.
+                if (portIndex == 0) Settings.ShortName = p.ShortName;
+                if (hasPort && (portIndex > 0 || !string.IsNullOrEmpty(Settings.Ports[0].Name)))
+                    Settings.Ports[portIndex] = Settings.Ports[portIndex] with { Name = p.ShortName };
                 SetNodeReport(ArtNetNodeReportCode.ShNameOk, "Short name programmed");
                 changed = true;
             }
@@ -839,15 +948,24 @@ public sealed class ArtNetNode : IAsyncDisposable, IDisposable
                     changed = true;
                 }
             }
-            if (p.AcnPriority <= 200) { _acnPriority = p.AcnPriority; changed = true; }
-            changed |= ApplyCommand(p.Command, portIndex, hasPort);
+            if (p.AcnPriority <= 200 && p.AcnPriority != _acnPriority) { _acnPriority = p.AcnPriority; changed = true; }
+            changed |= ApplyCommand(p.Command, portIndex, hasPort, out cleared);
+        }
+        if (cleared is not null)
+        {
+            lock (_syncLock)
+            {
+                _pendingSync.TryRemove(cleared.Address, out _);
+                Raise(UniverseChanged, new ArtNetUniverseEventArgs(cleared.Address, cleared.GetData(), cleared.Sources, cleared.IsMerging, false));
+            }
         }
         if (changed) Raise(ConfigurationChanged, EventArgs.Empty);
         _ = SendRepliesSafeAsync(from.Address);
     }
 
-    private bool ApplyCommand(ArtNetAddressCommand command, int portIndex, bool hasPort)
+    private bool ApplyCommand(ArtNetAddressCommand command, int portIndex, bool hasPort, out ArtNetUniverse? cleared)
     {
+        cleared = null;
         byte c = (byte)command;
         ArtNetPortConfig? port = hasPort ? Settings.Ports[portIndex] : null;
         ArtNetUniverse? universe = port is not null && _universes.TryGetValue(port.Address, out var u) ? u : null;
@@ -856,7 +974,7 @@ public sealed class ArtNetNode : IAsyncDisposable, IDisposable
             case ArtNetAddressCommand.None: return false;
             case ArtNetAddressCommand.CancelMerge:
                 if (universe is not null) universe.CancelMerge();
-                else foreach (var x in _universes.Values) x.CancelMerge();
+                else if (port is null) foreach (var x in _universes.Values) x.CancelMerge(); // node without ports
                 return true;
             case ArtNetAddressCommand.LedNormal: _indicator = ArtNetIndicatorState.Normal; return true;
             case ArtNetAddressCommand.LedMute: _indicator = ArtNetIndicatorState.Mute; return true;
@@ -876,7 +994,10 @@ public sealed class ArtNetNode : IAsyncDisposable, IDisposable
             case 0x30: Settings.Ports[portIndex] = port with { Kind = ArtNetPortKind.Input }; return true;
             case 0x60: port.Sacn = false; return true;
             case 0x70: port.Sacn = true; return true;
-            case 0x90: universe?.Clear(); return true;
+            case 0x90:
+                universe?.Clear();
+                cleared = universe; // UniverseChanged is raised by the caller outside the state lock
+                return true;
             case 0xA0: port.ContinuousOutput = false; return true;
             case 0xB0: port.ContinuousOutput = true; return true;
             case 0xC0: port.RdmDisabled = false; return true;
@@ -889,11 +1010,16 @@ public sealed class ArtNetNode : IAsyncDisposable, IDisposable
     {
         if (!Settings.AcceptRemoteProgramming) return;
         int portIndex = PortIndexForBind(p.BindIndex);
-        if (portIndex < Settings.Ports.Count && Settings.Ports[portIndex].Kind == ArtNetPortKind.Input)
+        bool changed = false;
+        lock (_stateLock)
         {
-            Settings.Ports[portIndex].InputDisabled = p.IsDisabled(0);
-            Raise(ConfigurationChanged, EventArgs.Empty);
+            if (portIndex < Settings.Ports.Count && Settings.Ports[portIndex].Kind == ArtNetPortKind.Input)
+            {
+                Settings.Ports[portIndex].InputDisabled = p.IsDisabled(0);
+                changed = true;
+            }
         }
+        if (changed) Raise(ConfigurationChanged, EventArgs.Empty);
         _ = SendRepliesSafeAsync(from.Address);
     }
 
@@ -931,6 +1057,7 @@ public sealed class ArtNetNode : IAsyncDisposable, IDisposable
 
     private async Task PollLoopAsync(CancellationToken ct)
     {
+        _inLoop.Value = true;
         try
         {
             if (Settings.SendPolls) await SafePollAsync(ct).ConfigureAwait(false);
@@ -941,8 +1068,12 @@ public sealed class ArtNetNode : IAsyncDisposable, IDisposable
 
                 var cutoff = DateTime.UtcNow - Settings.NodeTimeout;
                 foreach (var (key, node) in _nodes)
-                    if (node.LastSeen < cutoff && _nodes.TryRemove(key, out _))
-                        Raise(NodeLost, new ArtNetNodeEventArgs(node, timedOut: true));
+                {
+                    if (node.LastSeen >= cutoff) continue;
+                    bool removed;
+                    lock (_pollReplyLock) removed = node.LastSeen < cutoff && _nodes.TryRemove(new KeyValuePair<(IPAddress, byte), ArtNetRemoteNode>(key, node));
+                    if (removed) Raise(NodeLost, new ArtNetNodeEventArgs(node, timedOut: true));
+                }
 
                 var stale = DateTime.UtcNow - TimeSpan.FromSeconds(30);
                 foreach (var (ip, since) in _changeSubscribers) if (since < stale) _changeSubscribers.TryRemove(ip, out _);
@@ -961,16 +1092,18 @@ public sealed class ArtNetNode : IAsyncDisposable, IDisposable
 
     private async Task KeepAliveLoopAsync(CancellationToken ct)
     {
+        _inLoop.Value = true;
         try
         {
             using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(100));
             while (await timer.WaitForNextTickAsync(ct).ConfigureAwait(false))
             {
                 var now = DateTime.UtcNow;
-                if (_syncActive && now - _lastSync >= ArtNetConstants.SyncTimeout)
+                // If the receive thread holds the lock it is handling ArtDmx / ArtSync and expires sync itself.
+                if (_syncActive && Monitor.TryEnter(_syncLock))
                 {
-                    _syncActive = false; // back to non-synchronous mode
-                    FlushPendingSync(false);
+                    try { ExpireSync(now); }
+                    finally { Monitor.Exit(_syncLock); }
                 }
 
                 var keepAlive = Settings.DmxKeepAlive;
@@ -978,11 +1111,18 @@ public sealed class ArtNetNode : IAsyncDisposable, IDisposable
                 foreach (var (address, o) in _outputs)
                 {
                     if (now - o.LastSent < keepAlive) continue;
-                    ArtDmxPacket packet;
-                    lock (o) packet = NextPacket(address, o, ArtNetConstants.DmxChannels);
-                    try { await SendDmxPacketAsync(packet, o, ct).ConfigureAwait(false); }
+                    // Skip this tick when a user send is in progress; that frame is newer anyway.
+                    if (!o.SendGate.Wait(0)) continue;
+                    try
+                    {
+                        if (DateTime.UtcNow - o.LastSent < keepAlive) continue;
+                        ArtDmxPacket packet;
+                        lock (o) packet = NextPacket(address, o, ArtNetConstants.DmxChannels);
+                        await SendDmxPacketAsync(packet, o, ct).ConfigureAwait(false);
+                    }
                     catch (OperationCanceledException) { throw; }
-                    catch (Exception ex) { RaiseError(ex); o.LastSent = now; }
+                    catch (Exception ex) { RaiseError(ex); }
+                    finally { o.SendGate.Release(); }
                 }
             }
         }
