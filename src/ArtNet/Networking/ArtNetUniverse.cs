@@ -4,7 +4,7 @@ namespace ArtNet.Networking;
 
 /// <summary>
 /// Receive state of one Port-Address: up to two merged ArtDmx sources (HTP or LTP), sequence checking, the
-/// AcCancelMerge takeover and the buffered output used in synchronous (ArtSync) mode.
+/// AcCancelMerge takeover. Synchronous (ArtSync) output is buffered by <see cref="ArtNetNode"/>.
 /// </summary>
 public sealed class ArtNetUniverse
 {
@@ -41,6 +41,9 @@ public sealed class ArtNetUniverse
     /// <summary>Drop out-of-order packets (sequence field).</summary>
     public bool UseSequenceNumbers { get; set; } = true;
 
+    /// <summary>A packet up to this many sequence steps behind the last accepted one is treated as out of order.</summary>
+    public const int SequenceWindow = 20;
+
     /// <summary>Accepted ArtDmx packets.</summary>
     public long PacketCount { get; private set; }
 
@@ -67,7 +70,10 @@ public sealed class ArtNetUniverse
     /// <summary>Data received within <see cref="ArtNetConstants.StatusTimeout"/> (like the DMX status LED).</summary>
     public bool IsActive => DateTime.UtcNow - LastUpdate < ArtNetConstants.StatusTimeout;
 
-    /// <summary>Copy of the merged output (512 channels).</summary>
+    /// <summary>
+    /// Copy of the merged output (512 channels) as received. In synchronous (ArtSync) mode this can be ahead of the
+    /// output raised by <see cref="ArtNetNode.UniverseChanged"/>, which waits for the next ArtSync.
+    /// </summary>
     public byte[] GetData()
     {
         lock (_lock) return (byte[])_output.Clone();
@@ -79,10 +85,17 @@ public sealed class ArtNetUniverse
         get { lock (_lock) return channel is >= 1 and <= ArtNetConstants.DmxChannels ? _output[channel - 1] : (byte)0; }
     }
 
-    /// <summary>ArtAddress AcCancelMerge: the next ArtDmx becomes the only accepted source.</summary>
+    /// <summary>
+    /// ArtAddress AcCancelMerge: if currently merging, the next ArtDmx becomes the only accepted source. Ignored
+    /// when not merging.
+    /// </summary>
     public void CancelMerge()
     {
-        lock (_lock) _cancelMergePending = true;
+        lock (_lock)
+        {
+            Expire(DateTime.UtcNow);
+            if (_sources.Count > 1) _cancelMergePending = true;
+        }
     }
 
     /// <summary>Clears the output buffer (ArtAddress AcClearOp).</summary>
@@ -128,8 +141,10 @@ public sealed class ArtNetUniverse
             }
             else if (UseSequenceNumbers && packet.Sequence != 0 && src.LastSequence != 0)
             {
+                // Drop only packets slightly older than the last one (reordering on the network). A larger jump
+                // back is a restarted controller: accept it rather than freezing output for up to 127 frames.
                 int diff = (packet.Sequence - src.LastSequence) & 0xFF;
-                if (diff >= 128) { DroppedCount++; return null; } // older than the last one
+                if (diff >= 256 - SequenceWindow) { DroppedCount++; return null; }
             }
 
             src.LastSequence = packet.Sequence;

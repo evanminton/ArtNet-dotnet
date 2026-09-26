@@ -54,6 +54,10 @@ try
 catch (FormatException ex) { return Fail(ex.Message); }
 catch (ArgumentException ex) { return Fail(ex.Message); }
 catch (InvalidOperationException ex) { return Fail(ex.Message); }
+catch (OverflowException ex) { return Fail(ex.Message); }
+catch (IOException ex) { return Fail(ex.Message); }
+catch (UnauthorizedAccessException ex) { return Fail(ex.Message); }
+catch (TimeoutException ex) { return Fail(ex.Message); }
 catch (System.Net.Sockets.SocketException ex) { return Fail($"Network error: {ex.Message} (is another Art-Net application holding UDP 6454 exclusively?)"); }
 
 // ------------------------------------------------------------------ offline commands
@@ -123,6 +127,7 @@ static async Task<int> Listen(Options o)
 {
     await using var node = await StartNode(o, poll: !o.Has("no-poll"));
     var filter = o.List("filter").Select(ParseOpCode).ToHashSet();
+    var interval = TimeSpan.FromMilliseconds(o.Int("interval", 1000));
     var lastDmx = new Dictionary<PortAddress, DateTime>();
     node.NodeDiscovered += (_, e) => Log(ConsoleColor.Green, $"+ Node: {e.Node}");
     node.NodeUpdated += (_, e) => { if (o.Verbose) Log(ConsoleColor.DarkGreen, $"* Node changed: {e.Node}"); };
@@ -138,7 +143,7 @@ static async Task<int> Listen(Options o)
             // Throttle DMX lines per universe.
             lock (lastDmx)
             {
-                if (lastDmx.TryGetValue(dmx.PortAddress, out var t) && DateTime.UtcNow - t < TimeSpan.FromMilliseconds(o.Int("interval", 1000))) return;
+                if (lastDmx.TryGetValue(dmx.PortAddress, out var t) && DateTime.UtcNow - t < interval) return;
                 lastDmx[dmx.PortAddress] = DateTime.UtcNow;
             }
         }
@@ -278,7 +283,7 @@ static async Task<int> Nzs(Options o)
 static async Task<int> Vlc(Options o)
 {
     if (o.Positional.Count < 1) return Fail("Usage: artnet-monitor vlc <universe> (--url u | --text t | --location n) [--slot n] [--beacon hz] [--depth %] [--frequency hz] [--to ip]");
-    var p = new ArtVlcPacket { PortAddress = PortAddress.Parse(o.Positional[0]), SlotAddress = o.UShort("slot", 0), Depth = (byte)o.Int("depth", 0), Frequency = o.UShort("frequency", 0) };
+    var p = new ArtVlcPacket { PortAddress = PortAddress.Parse(o.Positional[0]), SlotAddress = o.UShort("slot", 0), Depth = o.Byte("depth", 0), Frequency = o.UShort("frequency", 0) };
     if (o.Get("url") is { } url) { p.PayloadLanguage = ArtVlcPayloadLanguage.BeaconUrl; p.PayloadText = url; }
     else if (o.Get("text") is { } text) { p.PayloadLanguage = ArtVlcPayloadLanguage.BeaconText; p.PayloadText = text; }
     else if (o.Get("location") is { } loc) { ushort id = ushort.Parse(loc, CultureInfo.InvariantCulture); p.PayloadLanguage = ArtVlcPayloadLanguage.BeaconLocationId; p.Payload = [(byte)(id >> 8), (byte)id]; }
@@ -296,12 +301,13 @@ static async Task<int> Address(Options o)
     var target = await ResolveNode(node, o.Positional[0], o);
     var p = new ArtAddressPacket
     {
-        BindIndex = (byte)o.Int("bind", target.Bind),
+        BindIndex = o.Byte("bind", target.Bind),
         ShortName = o.Get("name") ?? string.Empty,
         LongName = o.Get("long") ?? string.Empty,
         Command = o.Get("command") is { } c ? ArtNetText.Parse<ArtNetAddressCommand>(c) : ArtNetAddressCommand.None,
     };
     int port = o.Int("port", 0);
+    if (port is < 0 or > 3) return Fail("--port must be 0-3.");
     if (o.Get("universe") is { } uni)
     {
         var a = PortAddress.Parse(uni);
@@ -325,8 +331,13 @@ static async Task<int> Input(Options o)
     if (o.Positional.Count < 1) return Fail("Usage: artnet-monitor input <node> [--disable 1,3] [--bind n] [--ports 4]");
     await using var node = await StartNode(o, poll: false);
     var target = await ResolveNode(node, o.Positional[0], o);
-    var p = new ArtInputPacket { BindIndex = (byte)o.Int("bind", target.Bind), NumPorts = (ushort)o.Int("ports", 1) };
-    foreach (var d in o.List("disable")) p.SetDisabled(int.Parse(d, CultureInfo.InvariantCulture) - 1, true);
+    var p = new ArtInputPacket { BindIndex = o.Byte("bind", target.Bind), NumPorts = (ushort)o.Int("ports", 1) };
+    foreach (var d in o.List("disable"))
+    {
+        int n = int.Parse(d, CultureInfo.InvariantCulture);
+        if (n is < 1 or > 4) return Fail("--disable takes input numbers 1-4.");
+        p.SetDisabled(n - 1, true);
+    }
     Console.WriteLine(ArtNetFormatter.Format(p));
     var reply = await node.SendInputAsync(target.Address, p);
     Console.WriteLine(reply is null ? "No ArtPollReply within the timeout." : "Node replied:\n" + ArtNetFormatter.Format(reply, includeHeader: false));
@@ -369,9 +380,11 @@ static async Task<int> Data(Options o)
 
 static async Task<int> TimeCode(Options o)
 {
-    var type = o.Get("type") is { } t ? ArtNetText.Parse<ArtNetTimeCodeType>(t) : ArtNetTimeCodeType.Smpte;
-    var start = o.Positional.Count > 0 ? ParseTimecode(o.Positional[0]) : TimeSpan.Zero;
-    var p = ArtTimeCodePacket.FromTimeSpan(start, type, (byte)o.Int("stream", 0));
+    var type = o.Get("type") is { } t
+        ? t.Trim().Equals("df", StringComparison.OrdinalIgnoreCase) ? ArtNetTimeCodeType.DropFrame : ArtNetText.Parse<ArtNetTimeCodeType>(t)
+        : ArtNetTimeCodeType.Smpte;
+    var p = o.Positional.Count > 0 ? ParseTimecode(o.Positional[0], type) : new ArtTimeCodePacket { Type = type };
+    p.StreamId = o.Byte("stream", 0);
     await using var node = await StartNode(o, poll: false);
     IPAddress? to = o.Get("to") is { } ip ? IPAddress.Parse(ip) : null;
     int seconds = o.Seconds;
@@ -428,7 +441,7 @@ static async Task<int> Diag(Options o)
     {
         Text = string.Join(" ", o.Positional),
         Priority = o.Get("priority") is { } pr ? ArtNetText.Parse<ArtNetDiagnosticPriority>(pr) : ArtNetDiagnosticPriority.Low,
-        LogicalPort = (byte)o.Int("port", 0),
+        LogicalPort = o.Byte("port", 0),
     };
     await using var node = await StartNode(o, poll: false);
     if (o.Get("to") is { } ip) await node.SendAsync(p, IPAddress.Parse(ip));
@@ -667,12 +680,15 @@ static byte ParseByte(string s) => s.StartsWith("0x", StringComparison.OrdinalIg
     ? byte.Parse(s.AsSpan(2), NumberStyles.HexNumber, CultureInfo.InvariantCulture)
     : byte.Parse(s, CultureInfo.InvariantCulture);
 
-static TimeSpan ParseTimecode(string s)
+static ArtTimeCodePacket ParseTimecode(string s, ArtNetTimeCodeType type)
 {
     var p = s.Split(':', ';', '.');
     if (p.Length != 4) throw new FormatException("Time code must be HH:MM:SS:FF.");
     int[] v = p.Select(x => int.Parse(x, CultureInfo.InvariantCulture)).ToArray();
-    return new TimeSpan(0, v[0], v[1], v[2]) + TimeSpan.FromSeconds(v[3] / 30.0);
+    int fps = type.NominalFrames();
+    if (v[0] is < 0 or > 23 || v[1] is < 0 or > 59 || v[2] is < 0 or > 59 || v[3] < 0 || v[3] >= fps)
+        throw new FormatException($"Time code must be 00:00:00:00-23:59:59:{fps - 1:00} for {type.ToDisplayName()}.");
+    return new ArtTimeCodePacket { Type = type, Hours = (byte)v[0], Minutes = (byte)v[1], Seconds = (byte)v[2], Frames = (byte)v[3] };
 }
 
 static string Indent(string text, int n) => string.Join(Environment.NewLine, text.Split('\n').Select(l => new string(' ', n) + l.TrimEnd('\r')));
@@ -800,6 +816,13 @@ sealed class Options
     public bool Verbose => Has("verbose");
     public int Seconds => Int("seconds", 0);
     public int Int(string key, int fallback) => Get(key) is { } v ? int.Parse(v, CultureInfo.InvariantCulture) : fallback;
+
+    public byte Byte(string key, byte fallback)
+    {
+        int v = Int(key, fallback);
+        if (v is < 0 or > 255) throw new ArgumentException($"--{key} must be 0-255.");
+        return (byte)v;
+    }
 
     public ushort UShort(string key, ushort fallback) => Get(key) is { } v
         ? v.StartsWith("0x", StringComparison.OrdinalIgnoreCase)

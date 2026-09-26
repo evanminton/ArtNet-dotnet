@@ -20,7 +20,6 @@ public sealed class NodeDetailPage : ContentPage
         _node = node;
         Title = node.DisplayName;
         RefreshFields();
-        node.PropertyChanged += (_, e) => { if (e.PropertyName == nameof(ArtNetRemoteNode.Reply)) MainThread.BeginInvokeOnMainThread(RefreshFields); };
 
         Content = Ui.Page(
             Ui.Card("Status", _fields),
@@ -31,6 +30,25 @@ public sealed class NodeDetailPage : ContentPage
             DataCard(),
             RdmCard(),
             FirmwareCard());
+    }
+
+    // Subscribe only while visible: the node outlives the page, so a permanent handler would keep every page alive.
+    protected override void OnAppearing()
+    {
+        base.OnAppearing();
+        _node.PropertyChanged += OnNodeChanged;
+        RefreshFields();
+    }
+
+    protected override void OnDisappearing()
+    {
+        _node.PropertyChanged -= OnNodeChanged;
+        base.OnDisappearing();
+    }
+
+    private void OnNodeChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == nameof(ArtNetRemoteNode.Reply)) MainThread.BeginInvokeOnMainThread(RefreshFields);
     }
 
     private ArtNetNode Net => _service.RequireNode();

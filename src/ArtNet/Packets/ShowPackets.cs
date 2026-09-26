@@ -81,19 +81,28 @@ public sealed class ArtTimeCodePacket : ArtNetPacket
     /// <summary>Time of day represented (frames converted with the nominal rate).</summary>
     public TimeSpan ToTimeSpan() => new TimeSpan(0, Hours, Minutes, Seconds) + TimeSpan.FromSeconds(Frames / FrameRate);
 
-    /// <summary>Builds a time code from a time span.</summary>
+    /// <summary>
+    /// Builds a time code from a time span (the sub-second part converted with the nominal rate; drop-frame labels
+    /// 00 and 01 that do not exist are moved to 02).
+    /// </summary>
     public static ArtTimeCodePacket FromTimeSpan(TimeSpan time, ArtNetTimeCodeType type, byte streamId = 0)
     {
+        ArgumentOutOfRangeException.ThrowIfLessThan(time, TimeSpan.Zero);
         int fps = type.NominalFrames();
-        return new ArtTimeCodePacket
+        long subSecondTicks = time.Ticks % TimeSpan.TicksPerSecond;
+        // Small epsilon so e.g. 1/30 s (stored as 333333 ticks) still maps to frame 1.
+        int frames = (int)Math.Floor(subSecondTicks * type.FrameRate() / TimeSpan.TicksPerSecond + 1e-3);
+        var tc = new ArtTimeCodePacket
         {
             StreamId = streamId,
             Type = type,
             Hours = (byte)(time.Hours % 24),
             Minutes = (byte)time.Minutes,
             Seconds = (byte)time.Seconds,
-            Frames = (byte)Math.Min(fps - 1, (int)(time.Milliseconds / 1000.0 * type.FrameRate())),
+            Frames = (byte)Math.Min(fps - 1, frames),
         };
+        if (type == ArtNetTimeCodeType.DropFrame && tc.Seconds == 0 && tc.Minutes % 10 != 0 && tc.Frames < 2) tc.Frames = 2;
+        return tc;
     }
 
     /// <summary>"HH:MM:SS:FF" (';' before frames for drop frame).</summary>
@@ -103,12 +112,14 @@ public sealed class ArtTimeCodePacket : ArtNetPacket
     public void Increment()
     {
         int fps = Type.NominalFrames();
-        if (++Frames < fps) return;
+        if (Frames + 1 < fps) { Frames++; return; }
         Frames = 0;
-        if (++Seconds >= 60)
+        if (Seconds + 1 < 60) Seconds++;
+        else
         {
             Seconds = 0;
-            if (++Minutes >= 60) { Minutes = 0; Hours = (byte)((Hours + 1) % 24); }
+            if (Minutes + 1 < 60) Minutes++;
+            else { Minutes = 0; Hours = (byte)((Hours + 1) % 24); }
         }
         if (Type == ArtNetTimeCodeType.DropFrame && Seconds == 0 && Minutes % 10 != 0) Frames = 2;
     }

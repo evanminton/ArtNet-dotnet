@@ -5,7 +5,7 @@ A dependency-free .NET 10 implementation of **Art-Net 4** (protocol revision 14,
 Art-Net™ Designed by and Copyright Artistic Licence.
 
 ```
-ArtNet.slnx                   everything (the MAUI app needs the MAUI workload)
+ArtNet.slnx                   everything (the MAUI app needs the MAUI workload; maui-android too outside Windows)
 ├─ src/ArtNet                 library (net10.0, AOT/trim compatible, no NuGet dependencies)
 │  ├─ Protocol/               constants, enums (Tables 1-7), PortAddress
 │  ├─ Packets/                codec for every packet, parser, formatter
@@ -143,7 +143,9 @@ Run `artnet-monitor help` for every command and option.
 | **Reference** | Searchable catalog of every protocol option and RDM parameter. |
 | **Settings** | Names, style, interface/broadcast, announced output/input universes, merge mode, poll and keep-alive intervals, sync, programming, auto start. |
 
-Platform setup is in the project: Android network + multicast permissions and a Wi-Fi multicast lock, `NSLocalNetworkUsageDescription` on iOS / Mac Catalyst, sandbox network entitlements, private-network capabilities on Windows. On Windows allow the app through the firewall for UDP 6454.
+Platform setup is in the project: Android network + multicast permissions and a Wi-Fi multicast lock, `NSLocalNetworkUsageDescription` on iOS / Mac Catalyst, and sandbox network entitlements on Mac Catalyst. The Windows app is unpackaged (`WindowsPackageType=None`), so it is not sandboxed; allow it through the firewall for UDP 6454.
+
+**iOS devices:** sending and receiving broadcast UDP (ArtPoll discovery, broadcast ArtDmx / ArtSync) on iOS 14+ also needs the restricted `com.apple.developer.networking.multicast` entitlement, which Apple grants on request. It is not in the project because signing fails without an approved provisioning profile. Until it is added (an `Entitlements.plist` for iOS plus `CodesignEntitlements` in the csproj), discovery does not work on a real device; unicast to a known node IP does. The simulator is not affected.
 
 ## Spec notes and choices
 

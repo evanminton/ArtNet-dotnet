@@ -85,6 +85,9 @@ public sealed class ArtNetService : ObservableObject
     /// <summary>Universe shown on the DMX tab.</summary>
     public PortAddress MonitorAddress { get; set; } = new(1);
 
+    /// <summary>Universe announced as the "Monitor" output port (DMX tab "Subscribe"); kept across restarts.</summary>
+    public PortAddress? MonitorPort { get; set; }
+
     /// <summary>Raised on the UI thread (throttled) with the latest merged frame of <see cref="MonitorAddress"/>.</summary>
     public event EventHandler<ArtNetUniverseEventArgs>? MonitorFrame;
 
@@ -112,6 +115,7 @@ public sealed class ArtNetService : ObservableObject
         };
         foreach (var a in SafeUniverses(s.OutputUniverses)) ns.Ports.Add(new ArtNetPortConfig(ArtNetPortKind.Output, a) { MergeMode = s.MergeMode });
         foreach (var a in SafeUniverses(s.InputUniverses)) ns.Ports.Add(ArtNetPortConfig.Input(a));
+        if (MonitorPort is { } monitor) ns.Ports.Add(ArtNetPortConfig.Output(monitor, "Monitor"));
         if (!string.IsNullOrWhiteSpace(s.ProductUrl)) ns.DataReplies[ArtNetDataRequestCode.UrlProduct] = s.ProductUrl.Trim();
         if (IPAddress.TryParse(s.InterfaceAddress, out var local))
         {
