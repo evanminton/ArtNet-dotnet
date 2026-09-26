@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>ArtNet</RootNamespace>
+    <AssemblyName>ArtNet</AssemblyName>
+    <IsAotCompatible>true</IsAotCompatible>
+    <IsTrimmable>true</IsTrimmable>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <PackageId>ArtNet</PackageId>
+    <Description>Art-Net 4 (protocol 14, document revision 1.4dp) implementation for .NET 10 / .NET MAUI: codec for every packet, controller and node networking, DMX merge and sync, RDM transport, firmware upload and human-readable option catalogs.</Description>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageTags>artnet;art-net;dmx;dmx512;rdm;lighting;maui</PackageTags>
+  </PropertyGroup>
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+    <InternalsVisibleTo Include="ArtNet.Tests" />
+  </ItemGroup>
+</Project>
