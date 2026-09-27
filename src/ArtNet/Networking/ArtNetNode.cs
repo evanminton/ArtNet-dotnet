@@ -50,9 +50,15 @@ public sealed class ArtNetNode : IAsyncDisposable, IDisposable
     private readonly List<Task> _loops = [];
     private readonly object _stateLock = new();
     private readonly object _syncLock = new();
-    private readonly object _lifecycleLock = new();
+    private readonly SemaphoreSlim _lifecycle = new(1, 1);
     private readonly object _pollReplyLock = new();
-    private readonly AsyncLocal<bool> _inLoop = new();
+
+    /// <summary>
+    /// The node whose event handler is running synchronously on this thread (no <see cref="ArtNetNodeSettings.EventContext"/>).
+    /// Such a thread may be one of the node's loops, so <see cref="StopAsync"/> must not wait for them there.
+    /// Deliberately thread-static rather than async-local: work a handler hands to another thread may wait.
+    /// </summary>
+    [ThreadStatic] private static ArtNetNode? t_handlerNode;
     private HashSet<IPAddress> _localAddresses = [];
     private Socket? _socket;
     private CancellationTokenSource? _cts;
@@ -152,13 +158,21 @@ public sealed class ArtNetNode : IAsyncDisposable, IDisposable
         cancellationToken.ThrowIfCancellationRequested();
         if (Settings.PollInterval <= TimeSpan.Zero)
             throw new InvalidOperationException("Settings.PollInterval must be greater than zero.");
-        lock (_lifecycleLock)
+        if (InHandler)
         {
-            if (_cts is not null) return Task.CompletedTask;
-            Start();
+            // Never block a network thread behind a StopAsync that is waiting for that thread.
+            if (!_lifecycle.Wait(0)) throw new InvalidOperationException("The node is stopping.");
         }
+        else _lifecycle.Wait(cancellationToken);
+        try
+        {
+            if (_cts is null) Start();
+        }
+        finally { _lifecycle.Release(); }
         return Task.CompletedTask;
     }
+
+    private bool InHandler => ReferenceEquals(t_handlerNode, this);
 
     private void Start()
     {
@@ -183,37 +197,42 @@ public sealed class ArtNetNode : IAsyncDisposable, IDisposable
     /// </summary>
     public async Task StopAsync()
     {
-        CancellationTokenSource cts;
-        Task[] loops;
-        lock (_lifecycleLock)
+        bool inHandler = InHandler;
+        if (inHandler)
         {
-            if (_cts is null) return;
-            cts = _cts;
+            if (!_lifecycle.Wait(0)) return; // a stop is already in progress (possibly waiting for this thread)
+        }
+        else await _lifecycle.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            var cts = _cts;
+            if (cts is null) return;
             cts.Cancel();
             _socket?.Dispose();
             _socket = null;
-            loops = [.. _loops];
+            Task[] loops = [.. _loops];
             _loops.Clear();
             _cts = null;
-        }
-        if (!_inLoop.Value)
-        {
-            try { await Task.WhenAll(loops).ConfigureAwait(false); } catch { /* loops end on dispose */ }
-            cts.Dispose(); // only once no loop can still observe the token
-        }
+            if (!inHandler)
+            {
+                try { await Task.WhenAll(loops).ConfigureAwait(false); } catch { /* loops end on dispose */ }
+                cts.Dispose(); // only once no loop can still observe the token
+            }
 
-        lock (_waiters)
-        {
-            foreach (var w in _waiters) w.Tcs.TrySetCanceled();
-            _waiters.Clear();
+            lock (_waiters)
+            {
+                foreach (var w in _waiters) w.Tcs.TrySetCanceled();
+                _waiters.Clear();
+            }
+            foreach (var n in _nodes.Values) Raise(NodeLost, new ArtNetNodeEventArgs(n));
+            _nodes.Clear();
+            lock (_syncLock)
+            {
+                _pendingSync.Clear();
+                _syncActive = false;
+            }
         }
-        foreach (var n in _nodes.Values) Raise(NodeLost, new ArtNetNodeEventArgs(n));
-        _nodes.Clear();
-        lock (_syncLock)
-        {
-            _pendingSync.Clear();
-            _syncActive = false;
-        }
+        finally { _lifecycle.Release(); }
     }
 
     public async ValueTask DisposeAsync() => await StopAsync().ConfigureAwait(false);
@@ -471,6 +490,7 @@ public sealed class ArtNetNode : IAsyncDisposable, IDisposable
         Exception? first = null;
         foreach (var t in targets)
         {
+            ct.ThrowIfCancellationRequested(); // a stopped loop must not use the socket of a restarted node
             try { await SendAsync(packet, t, ct).ConfigureAwait(false); }
             catch (Exception ex) when (ex is not OperationCanceledException) { first ??= ex; }
         }
@@ -704,7 +724,6 @@ public sealed class ArtNetNode : IAsyncDisposable, IDisposable
 
     private async Task ReceiveLoopAsync(Socket socket, CancellationToken ct)
     {
-        _inLoop.Value = true;
         var buffer = new byte[65536];
         EndPoint any = new IPEndPoint(IPAddress.Any, 0);
         while (!ct.IsCancellationRequested)
@@ -797,8 +816,13 @@ public sealed class ArtNetNode : IAsyncDisposable, IDisposable
                 isNew = true;
                 return new ArtNetRemoteNode(k.Address, k.Bind) { IsLocal = local, EventContext = Settings.EventContext };
             });
-            changed = node.Update(reply);
-            node.LastSeen = DateTime.UtcNow;
+            bool c = false;
+            RunAsHandler(() => // PropertyChanged handlers run here when there is no EventContext
+            {
+                c = node.Update(reply);
+                node.LastSeen = DateTime.UtcNow;
+            });
+            changed = c;
         }
         if (isNew) Raise(NodeDiscovered, new ArtNetNodeEventArgs(node));
         else if (changed) Raise(NodeUpdated, new ArtNetNodeEventArgs(node));
@@ -1057,7 +1081,6 @@ public sealed class ArtNetNode : IAsyncDisposable, IDisposable
 
     private async Task PollLoopAsync(CancellationToken ct)
     {
-        _inLoop.Value = true;
         try
         {
             if (Settings.SendPolls) await SafePollAsync(ct).ConfigureAwait(false);
@@ -1092,7 +1115,6 @@ public sealed class ArtNetNode : IAsyncDisposable, IDisposable
 
     private async Task KeepAliveLoopAsync(CancellationToken ct)
     {
-        _inLoop.Value = true;
         try
         {
             using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(100));
@@ -1137,7 +1159,7 @@ public sealed class ArtNetNode : IAsyncDisposable, IDisposable
     {
         if (handler is null) return;
         var ctx = Settings.EventContext;
-        if (ctx is null) Invoke(handler, args);
+        if (ctx is null) RunAsHandler(() => Invoke(handler, args));
         else ctx.Post(_ => Invoke(handler, args), null);
     }
 
@@ -1146,8 +1168,17 @@ public sealed class ArtNetNode : IAsyncDisposable, IDisposable
         if (handler is null) return;
         var ctx = Settings.EventContext;
         void Run() { try { handler(this, args); } catch (Exception ex) { RaiseError(ex); } }
-        if (ctx is null) Run();
+        if (ctx is null) RunAsHandler(Run);
         else ctx.Post(_ => Run(), null);
+    }
+
+    /// <summary>Runs user code synchronously on this thread, marked so <see cref="StopAsync"/> does not wait for itself.</summary>
+    private void RunAsHandler(Action action)
+    {
+        var previous = t_handlerNode;
+        t_handlerNode = this;
+        try { action(); }
+        finally { t_handlerNode = previous; }
     }
 
     private void Invoke<T>(EventHandler<T> handler, T args) where T : EventArgs

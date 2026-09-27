@@ -220,4 +220,47 @@ public class RegressionTests
         Assert.Same(disposed.Task, done);
         Assert.False(node.IsRunning);
     }
+
+    [Fact]
+    public async Task Dispose_FromTaskStartedByHandler_WaitsForTheLoops()
+    {
+        int port = 20000 + Random.Shared.Next(20000);
+        var node = new ArtNetNode(new ArtNetNodeSettings { Port = port, SendPolls = false, ReplyToPolls = false });
+        await node.StartAsync();
+        var loops = ((List<Task>)typeof(ArtNetNode).GetField("_loops", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(node)!).ToArray();
+        Task? disposing = null;
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        node.TimeCodeReceived += (_, _) =>
+        {
+            disposing = Task.Run(async () => await node.DisposeAsync()); // not the loop thread: must wait
+            started.TrySetResult();
+            Thread.Sleep(300); // keep the receive loop busy so returning early is observable
+        };
+        using var udp = new UdpClient();
+        await udp.SendAsync(new ArtTimeCodePacket().ToArray(), new IPEndPoint(IPAddress.Loopback, port));
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await disposing!.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.All(loops, t => Assert.True(t.IsCompleted));
+    }
+
+    [Fact]
+    public async Task Restart_FromEventHandler_Works()
+    {
+        int port = 20000 + Random.Shared.Next(20000);
+        var node = new ArtNetNode(new ArtNetNodeSettings { Port = port, SendPolls = false, ReplyToPolls = false });
+        var restarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        node.TimeCodeReceived += (_, _) =>
+        {
+            node.StopAsync().GetAwaiter().GetResult();
+            node.StartAsync().GetAwaiter().GetResult();
+            restarted.TrySetResult();
+        };
+        await node.StartAsync();
+        using var udp = new UdpClient();
+        await udp.SendAsync(new ArtTimeCodePacket().ToArray(), new IPEndPoint(IPAddress.Loopback, port));
+        await restarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.True(node.IsRunning);
+        await node.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.False(node.IsRunning);
+    }
 }
