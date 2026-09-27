@@ -161,7 +161,11 @@ public sealed class ArtNetNode : IAsyncDisposable, IDisposable
         if (InHandler)
         {
             // Never block a network thread behind a StopAsync that is waiting for that thread.
-            if (!_lifecycle.Wait(0)) throw new InvalidOperationException("The node is stopping.");
+            if (!_lifecycle.Wait(0))
+            {
+                if (_cts is not null) return Task.CompletedTask; // running, or a concurrent start is finishing
+                throw new InvalidOperationException("The node is stopping.");
+            }
         }
         else _lifecycle.Wait(cancellationToken);
         try
