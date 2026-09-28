@@ -1080,16 +1080,20 @@ public sealed class ArtNetNode : IAsyncDisposable, IDisposable
         _ = SendSafeAsync(reply, new IPEndPoint(from.Address, Settings.Port));
     }
 
+    // Automatic replies are best effort: a node that is not running (never started, stopped or stopping while the
+    // reply was queued) has nobody to answer, so they are dropped instead of reported through Error.
     private async Task SendRepliesSafeAsync(IPAddress to)
     {
+        if (_socket is null) return;
         try { await SendPollRepliesAsync(to).ConfigureAwait(false); }
-        catch (Exception ex) { RaiseError(ex); }
+        catch (Exception ex) { if (_socket is not null) RaiseError(ex); }
     }
 
     private async Task SendSafeAsync(ArtNetPacket packet, IPEndPoint to)
     {
+        if (_socket is null) return;
         try { await SendAsync(packet, to).ConfigureAwait(false); }
-        catch (Exception ex) { RaiseError(ex); }
+        catch (Exception ex) { if (_socket is not null) RaiseError(ex); }
     }
 
     // ---------------------------------------------------------------- loops
