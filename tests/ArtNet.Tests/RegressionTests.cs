@@ -263,4 +263,30 @@ public class RegressionTests
         await node.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5));
         Assert.False(node.IsRunning);
     }
+
+    [Fact]
+    public void UpdatePorts_IsAtomicWithRemoteProgramming()
+    {
+        var settings = new ArtNetNodeSettings { Ports = [ArtNetPortConfig.Output(new PortAddress(1)), ArtNetPortConfig.Output(new PortAddress(2), "Monitor")] };
+        var node = new ArtNetNode(settings);
+        var errors = new List<Exception>();
+        node.Error += (_, e) => { lock (errors) errors.Add(e.Exception); };
+        var rename = new ArtAddressPacket { BindIndex = 2, ShortName = "Remote" }.ToArray();
+        var from = new IPEndPoint(IPAddress.Parse("2.0.0.10"), ArtNetConstants.Port);
+
+        var remote = Task.Run(() => { for (int i = 0; i < 2000; i++) node.InjectDatagram(rename, from); });
+        for (int i = 0; i < 2000; i++)
+        {
+            bool add = i % 2 == 0;
+            node.UpdatePorts(ports =>
+            {
+                var list = ports.Where(p => p.Address != new PortAddress(2)).ToList();
+                if (add) list.Add(ArtNetPortConfig.Output(new PortAddress(2), "Monitor"));
+                return list;
+            });
+        }
+        remote.Wait();
+        Assert.Empty(errors);
+        Assert.Single(settings.Ports); // last update removed the second port
+    }
 }

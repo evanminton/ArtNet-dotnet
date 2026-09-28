@@ -80,10 +80,13 @@ public sealed class DmxPage : ContentPage
                 var node = _service.RequireNode();
                 var a = Ui.ParseUniverse(universe);
                 _service.MonitorPort = on ? a : null; // re-added by the service when the node restarts
-                // Replace the list rather than mutating it: the node reads it on network threads.
-                var ports = node.Settings.Ports.Where(p => p.Name != "Monitor").ToList();
-                if (on) ports.Add(ArtNetPortConfig.Output(a, "Monitor"));
-                node.Settings.Ports = ports;
+                // Through the node: ArtAddress / ArtInput may change the ports on the receive thread.
+                node.UpdatePorts(ports =>
+                {
+                    var list = ports.Where(p => p.Name != "Monitor").ToList();
+                    if (on) list.Add(ArtNetPortConfig.Output(a, "Monitor"));
+                    return list;
+                });
                 await node.NotifyChangedAsync();
                 status.Text = on ? $"Announcing an output port for universe {a}." : "Monitor port removed.";
             }

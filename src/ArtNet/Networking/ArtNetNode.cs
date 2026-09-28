@@ -77,8 +77,8 @@ public sealed class ArtNetNode : IAsyncDisposable, IDisposable
 
     /// <summary>
     /// Settings. Names and ports may be changed while running; call <see cref="NotifyChangedAsync"/> afterwards.
-    /// Replace entries of <see cref="ArtNetNodeSettings.Ports"/> rather than adding or removing them from another
-    /// thread while the node is receiving; the node reads a snapshot of the list.
+    /// While the node is running, change <see cref="ArtNetNodeSettings.Ports"/> only through <see cref="UpdatePorts"/>:
+    /// ArtAddress / ArtInput from the network modify the list on the receive thread.
     /// </summary>
     public ArtNetNodeSettings Settings { get; }
 
@@ -401,6 +401,17 @@ public sealed class ArtNetNode : IAsyncDisposable, IDisposable
         try { await NotifyChangedAsync().ConfigureAwait(false); }
         catch (Exception ex) when (ex is ObjectDisposedException or InvalidOperationException) { }
         catch (Exception ex) { RaiseError(ex); }
+    }
+
+    /// <summary>
+    /// Replaces <see cref="ArtNetNodeSettings.Ports"/> with the result of <paramref name="update"/>, atomically with
+    /// respect to remote programming (ArtAddress / ArtInput). <paramref name="update"/> receives the current ports and
+    /// must not call back into the node. Call <see cref="NotifyChangedAsync"/> afterwards to tell controllers.
+    /// </summary>
+    public void UpdatePorts(Func<IReadOnlyList<ArtNetPortConfig>, IEnumerable<ArtNetPortConfig>> update)
+    {
+        ArgumentNullException.ThrowIfNull(update);
+        lock (_stateLock) Settings.Ports = [.. update([.. Settings.Ports])];
     }
 
     /// <summary>Copy of <see cref="ArtNetNodeSettings.Ports"/> for reading on network threads.</summary>
