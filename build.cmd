@@ -17,6 +17,9 @@ for %%C in (%CONFIGS%) do (
   call :step %%C "library" build src\ArtNet\ArtNet.csproj -c %%C
   call :step %%C "monitor" build tools\ArtNet.Monitor\ArtNet.Monitor.csproj -c %%C
   call :step %%C "tests" test tests\ArtNet.Tests\ArtNet.Tests.csproj -c %%C
+  if exist apps\ArtNet.Desktop\ArtNet.Desktop.csproj (
+    call :step %%C "desktop-windows" build apps\ArtNet.Desktop\ArtNet.Desktop.csproj -c %%C
+  )
   if exist samples\ArtNet.Maui\ArtNet.Maui.csproj (
     call :step %%C "maui-windows" build samples\ArtNet.Maui\ArtNet.Maui.csproj -c %%C -f net10.0-windows10.0.19041.0
     if "%ARTNET_ANDROID%"=="1" (

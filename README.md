@@ -1,6 +1,6 @@
 # Art-Net 4 for .NET 10 / .NET MAUI
 
-A dependency-free .NET 10 implementation of **Art-Net 4** (protocol revision 14, specification document revision 1.4dp, 23/10/2025): every packet in the spec, controller and node networking, DMX merge (HTP/LTP) and ArtSync, RDM transport, firmware upload, and a human-readable layer over every protocol option. Ships with `artnet-monitor`, a command-line utility, and **Art-Net Monitor**, a .NET MAUI app. Both expose every packet type in readable form.
+A dependency-free .NET 10 implementation of **Art-Net 4** (protocol revision 14, specification document revision 1.4dp, 23/10/2025): every packet in the spec, controller and node networking, DMX merge (HTP/LTP) and ArtSync, RDM transport, firmware upload, and a human-readable layer over every protocol option. Ships with `artnet-monitor`, a command-line utility, **Art-Net Monitor**, a cross-platform .NET MAUI app, and **Art-Net Desktop**, a standalone Windows edition of the app. All expose every packet type in readable form.
 
 Art-Net™ Designed by and Copyright Artistic Licence.
 
@@ -15,15 +15,18 @@ ArtNet.slnx                   everything (the MAUI app needs the MAUI workload; 
 │  └─ Networking/             ArtNetNode (UDP 6454), settings, remote nodes, universes (merge/sync)
 ├─ tools/ArtNet.Monitor       artnet-monitor CLI (dotnet tool)
 ├─ tests/ArtNet.Tests         xUnit tests (byte offsets from the spec, round trips, merge, sync, programming)
+├─ apps/ArtNet.Desktop        Art-Net Desktop – standalone Windows MAUI app (unpackaged, self-contained)
 ├─ samples/ArtNet.Maui        Art-Net Monitor – .NET MAUI app (Windows, Android, iOS, Mac Catalyst)
-└─ build.cmd                  Debug + Release build of everything, tests, log in artifacts\build-log.txt
+├─ build.cmd                  Debug + Release build of everything, tests, log in artifacts\build-log.txt
+└─ publish-desktop.cmd        standalone Art-Net Desktop folder + zip in artifacts\desktop
 ```
 
 ## Build
 
 ```powershell
-.\build.cmd                    # Debug and Release: library, CLI, tests, MAUI Windows app
+.\build.cmd                    # Debug and Release: library, CLI, tests, Art-Net Desktop, MAUI Windows app
 .\build.cmd Release            # one configuration
+.\publish-desktop.cmd          # standalone Windows app → artifacts\desktop\win-x64 + zip (arg: win-arm64 / win-x86)
 .\build-android.cmd            # also the Android app (dotnet workload install maui-android first)
 dotnet test  tests/ArtNet.Tests -c Release
 dotnet run   --project tools/ArtNet.Monitor -- nodes
@@ -131,6 +134,19 @@ artnet-monitor decode 4172742D4E6574000020000E...
 ```
 
 Run `artnet-monitor help` for every command and option.
+
+## Art-Net Desktop (standalone Windows app)
+
+`apps/ArtNet.Desktop` is the Windows-only edition of the app: `net10.0-windows10.0.19041.0` only, unpackaged (`WindowsPackageType=None`) and self-contained (.NET and the Windows App SDK are bundled), so the published folder runs as-is on Windows 10 1809+ – copy it anywhere and start `ArtNetDesktop.exe`, no installer or runtime needed. `publish-desktop.cmd [rid]` produces the folder and a zip.
+
+It has every page of Art-Net Monitor (below), laid out for the desktop:
+
+- **Sidebar** – Nodes, DMX, Show, Packets, Reference, Settings, with the node status, last timecode and Start/Stop always visible.
+- **Menu bar and shortcuts** – File: export packet log (Ctrl+E, every decoded field + hex dump), export node list (Ctrl+Shift+E, every ArtPollReply field), open exports folder (`Documents\Art-Net Desktop`). Node: Start/Stop (F5), Restart (Ctrl+F5), Poll now (Ctrl+R), ArtSync, clear log (Ctrl+L). Go: Ctrl+1…6. Help: network / firewall help (F1), about.
+- **Window** – size and position remembered between runs, 960×600 minimum.
+- Clear start errors when UDP 6454 is held exclusively or blocked.
+
+Settings are stored separately from Art-Net Monitor (application ID `com.evanminton.artnetdesktop`), so both can be installed side by side. Allow the app through Windows Defender Firewall for UDP 6454.
 
 ## Art-Net Monitor (MAUI app)
 

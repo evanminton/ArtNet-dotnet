@@ -8,6 +8,9 @@
   <Folder Name="/tests/">
     <Project Path="tests/ArtNet.Tests/ArtNet.Tests.csproj" />
   </Folder>
+  <Folder Name="/apps/">
+    <Project Path="apps/ArtNet.Desktop/ArtNet.Desktop.csproj" />
+  </Folder>
   <Folder Name="/samples/">
     <Project Path="samples/ArtNet.Maui/ArtNet.Maui.csproj" />
   </Folder>
