@@ -85,12 +85,21 @@ public sealed class ArtNetRemoteNode : INotifyPropertyChanged
 
     public bool IsSubscribedTo(PortAddress address) => Reply.IsSubscribedTo(address);
 
+    /// <summary>
+    /// Stores the reply and returns true when something other than the NodeReport counter changed: the spec has the
+    /// counter increment on every ArtPollReply, so comparing it would report every reply as a change.
+    /// </summary>
     internal bool Update(ArtPollReplyPacket reply)
     {
         var old = Reply;
         Reply = reply;
         ReplyCount++;
-        bool changed = ReplyCount == 1 || !old.ToArray().AsSpan().SequenceEqual(reply.ToArray());
+        bool changed = ReplyCount == 1 || !SameIgnoringReportCounter(old, reply);
+        if (!changed && old.NodeReport != reply.NodeReport)
+        {
+            OnPropertyChanged(nameof(Reply));
+            OnPropertyChanged(nameof(NodeReport));
+        }
         if (changed)
         {
             OnPropertyChanged(nameof(Reply));
@@ -102,6 +111,18 @@ public sealed class ArtNetRemoteNode : INotifyPropertyChanged
         }
         OnPropertyChanged(nameof(ReplyCount));
         return changed;
+    }
+
+    private static bool SameIgnoringReportCounter(ArtPollReplyPacket a, ArtPollReplyPacket b)
+    {
+        const int reportStart = 108, reportEnd = 172; // NodeReport[64]
+        var x = a.ToArray().AsSpan();
+        var y = b.ToArray().AsSpan();
+        if (!x[..reportStart].SequenceEqual(y[..reportStart]) || !x[reportEnd..].SequenceEqual(y[reportEnd..])) return false;
+        if (a.NodeReport == b.NodeReport) return true;
+        return ArtPollReplyPacket.TryParseNodeReport(a.NodeReport, out var codeA, out _, out var textA) &&
+               ArtPollReplyPacket.TryParseNodeReport(b.NodeReport, out var codeB, out _, out var textB) &&
+               codeA == codeB && textA == textB;
     }
 
     private void Set<T>(ref T field, T value, [CallerMemberName] string? name = null)

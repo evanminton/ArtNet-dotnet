@@ -26,6 +26,8 @@ public sealed class ArtNetNode : IAsyncDisposable, IDisposable
         public byte[] Data = new byte[ArtNetConstants.DmxChannels];
         public byte Sequence;
         public byte Physical;
+        /// <summary>Channels sent per frame; keep-alive repeats it so the ArtDmx Length stays stable.</summary>
+        public int Length = ArtNetConstants.DmxChannels;
         public DateTime LastSent;
         public int LastTargets;
         /// <summary>Serialises build + send so keep-alive frames never overtake newer frames on the wire.</summary>
@@ -111,7 +113,10 @@ public sealed class ArtNetNode : IAsyncDisposable, IDisposable
 
     // ---------------------------------------------------------------- events
 
-    /// <summary>Every decoded packet (raised before the typed events).</summary>
+    /// <summary>
+    /// Every decoded packet (raised before the typed events), including packets with a protocol version below 14,
+    /// which the node otherwise ignores.
+    /// </summary>
     public event EventHandler<ArtNetPacketEventArgs<ArtNetPacket>>? PacketReceived;
     public event EventHandler<ArtNetNodeEventArgs>? NodeDiscovered;
     /// <summary>A known node sent an ArtPollReply with different contents.</summary>
@@ -236,6 +241,8 @@ public sealed class ArtNetNode : IAsyncDisposable, IDisposable
             }
             foreach (var n in _nodes.Values) Raise(NodeLost, new ArtNetNodeEventArgs(n));
             _nodes.Clear();
+            // Received levels stay readable, but a restarted node must not merge new controllers with stale frames.
+            foreach (var u in _universes.Values) u.ResetSources();
             lock (_syncLock)
             {
                 _pendingSync.Clear();
@@ -439,7 +446,7 @@ public sealed class ArtNetNode : IAsyncDisposable, IDisposable
 
     /// <summary>
     /// Sends ArtDmx for a universe to every subscribed node (unicast) plus <see cref="ArtNetNodeSettings.StaticDmxTargets"/>.
-    /// The frame is remembered and re-sent by the keep-alive loop. Returns the number of destinations.
+    /// The frame is remembered and re-sent, at the same length, by the keep-alive loop. Returns the number of destinations.
     /// </summary>
     public async Task<int> SendDmxAsync(PortAddress address, ReadOnlyMemory<byte> data, byte physical = 0, CancellationToken cancellationToken = default)
     {
@@ -454,6 +461,7 @@ public sealed class ArtNetNode : IAsyncDisposable, IDisposable
                 data.Span[..n].CopyTo(o.Data);
                 o.Data.AsSpan(n).Clear();
                 o.Physical = physical;
+                o.Length = n;
                 packet = NextPacket(address, o, n);
             }
             return await SendDmxPacketAsync(packet, o, cancellationToken).ConfigureAwait(false);
@@ -461,7 +469,10 @@ public sealed class ArtNetNode : IAsyncDisposable, IDisposable
         finally { o.SendGate.Release(); }
     }
 
-    /// <summary>Changes channels of the remembered output frame and sends it. <paramref name="startChannel"/> is 1-based.</summary>
+    /// <summary>
+    /// Changes channels of the remembered output frame and sends it. <paramref name="startChannel"/> is 1-based. The
+    /// frame keeps the length of the last <see cref="SendDmxAsync"/> (512 if none), grown to cover the changed channels.
+    /// </summary>
     public async Task<int> SetChannelsAsync(PortAddress address, int startChannel, ReadOnlyMemory<byte> levels, CancellationToken cancellationToken = default)
     {
         if (startChannel < 1 || startChannel > ArtNetConstants.DmxChannels) throw new ArgumentOutOfRangeException(nameof(startChannel));
@@ -474,7 +485,8 @@ public sealed class ArtNetNode : IAsyncDisposable, IDisposable
             {
                 int n = Math.Min(levels.Length, ArtNetConstants.DmxChannels - startChannel + 1);
                 levels.Span[..n].CopyTo(o.Data.AsSpan(startChannel - 1));
-                packet = NextPacket(address, o, ArtNetConstants.DmxChannels);
+                o.Length = Math.Max(o.Length, startChannel - 1 + n);
+                packet = NextPacket(address, o, o.Length);
             }
             return await SendDmxPacketAsync(packet, o, cancellationToken).ConfigureAwait(false);
         }
@@ -790,8 +802,11 @@ public sealed class ArtNetNode : IAsyncDisposable, IDisposable
         if (packet is ArtPollReplyPacket pr)
             node = HandlePollReply(pr, from, local);
 
-        CompleteWaiters(packet, from);
+        // Devices older than Art-Net 4 are ignored as the spec asks; packet logs still see them.
+        bool obsolete = packet.HasProtocolVersion && packet.ProtocolVersion < ArtNetConstants.MinimumProtocolVersion;
+        if (!obsolete) CompleteWaiters(packet, from);
         Raise(PacketReceived, Args(packet, from, node));
+        if (obsolete) return;
 
         switch (packet)
         {
@@ -1169,7 +1184,7 @@ public sealed class ArtNetNode : IAsyncDisposable, IDisposable
                     {
                         if (DateTime.UtcNow - o.LastSent < keepAlive) continue;
                         ArtDmxPacket packet;
-                        lock (o) packet = NextPacket(address, o, ArtNetConstants.DmxChannels);
+                        lock (o) packet = NextPacket(address, o, o.Length);
                         await SendDmxPacketAsync(packet, o, ct).ConfigureAwait(false);
                     }
                     catch (OperationCanceledException) { throw; }
