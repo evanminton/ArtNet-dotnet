@@ -98,7 +98,8 @@ public sealed class NodeDetailPage : ContentPage
         var longName = Ui.Entry(_node.LongName, "unchanged", 420);
         var port = Ui.Picker(new[] { "Port 1", "Port 2", "Port 3", "Port 4" }, 0, 120);
         var firstPort = _node.Ports.FirstOrDefault();
-        var universe = Ui.Entry(firstPort is null ? "" : (firstPort.CanOutput ? firstPort.OutputAddress : firstPort.InputAddress).Value.ToString(), "unchanged", 140);
+        // Empty unless typed: a pre-filled value would reprogram the port on every Program click.
+        var universe = Ui.Entry("", firstPort is null ? "unchanged" : $"unchanged ({(firstPort.CanOutput ? firstPort.OutputAddress : firstPort.InputAddress).Value})", 140);
         var direction = Ui.Picker(new[] { "Output (SwOut)", "Input (SwIn)" }, firstPort is { CanOutput: false, CanInput: true } ? 1 : 0, 160);
         var acn = Ui.Entry("", "sACN priority 0-200", 160, Keyboard.Numeric);
         var bind = Ui.Entry(_node.BindIndex.ToString(), "bind", 80, Keyboard.Numeric);

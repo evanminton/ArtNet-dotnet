@@ -51,6 +51,7 @@ public sealed class DmxPage : ContentPage
     private readonly Entry _outUniverse = Ui.Entry("1", "universe", 120);
     private bool _syncAfterSend;
     private DateTime _lastSend;
+    private bool _trailingSend;
 
     public DmxPage(ArtNetService service)
     {
@@ -77,9 +78,13 @@ public sealed class DmxPage : ContentPage
         {
             try
             {
-                var node = _service.RequireNode();
                 var a = Ui.ParseUniverse(universe);
-                _service.MonitorPort = on ? a : null; // re-added by the service when the node restarts
+                _service.MonitorPort = on ? a : null; // added by the service whenever the node starts
+                if (_service.Node is not { } node)
+                {
+                    status.Text = on ? $"Universe {a} will be announced when the node starts." : "Monitor port removed.";
+                    return;
+                }
                 // Through the node: ArtAddress / ArtInput may change the ports on the receive thread.
                 node.UpdatePorts(ports =>
                 {
@@ -154,8 +159,19 @@ public sealed class DmxPage : ContentPage
             {
                 var (first, last) = Channels();
                 for (int c = first; c <= last; c++) _output[c - 1] = v;
-                if (DateTime.UtcNow - _lastSend > TimeSpan.FromMilliseconds(22)) await SendAsync(status, physical);
                 _outputView.Invalidate();
+                if (DateTime.UtcNow - _lastSend > TimeSpan.FromMilliseconds(22)) await SendAsync(status, physical);
+                else if (!_trailingSend)
+                {
+                    // Throttled: send the latest levels once the interval has passed so the final position is not lost.
+                    _trailingSend = true;
+                    try
+                    {
+                        await Task.Delay(25);
+                        await SendAsync(status, physical);
+                    }
+                    finally { _trailingSend = false; }
+                }
             }
             catch (Exception ex) { status.Text = "⚠ " + ex.Message; }
         };

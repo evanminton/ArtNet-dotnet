@@ -63,10 +63,13 @@ public sealed class ShowPage : ContentPage
             var parts = (start.Text ?? "0:0:0:0").Split(':', ';', '.');
             if (parts.Length != 4) throw new FormatException("Start must be HH:MM:SS:FF.");
             var v = parts.Select(int.Parse).ToArray();
+            int fps = t.NominalFrames();
+            if (v[0] is < 0 or > 23 || v[1] is < 0 or > 59 || v[2] is < 0 or > 59 || v[3] < 0 || v[3] >= fps)
+                throw new FormatException($"Start must be within 00:00:00:00-23:59:59:{fps - 1:00}.");
             return new ArtTimeCodePacket
             {
                 Type = t, Hours = (byte)v[0], Minutes = (byte)v[1], Seconds = (byte)v[2],
-                Frames = (byte)Math.Min(v[3], t.NominalFrames() - 1), StreamId = Ui.ParseByte(stream.Text, "Stream"),
+                Frames = (byte)v[3], StreamId = Ui.ParseByte(stream.Text, "Stream"),
             };
         }
 

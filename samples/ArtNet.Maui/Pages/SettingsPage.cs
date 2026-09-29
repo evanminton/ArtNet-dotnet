@@ -71,8 +71,11 @@ public sealed class SettingsPage : ContentPage
                 Ui.Switch("Start the node when the app opens", autoStart, v => autoStart = v)),
             Ui.Button("Save and apply", async () =>
             {
-                AppSettings.ParseUniverses(outputs.Text); // validates
+                // Validate everything before changing any setting, so an error leaves the settings as they were.
+                AppSettings.ParseUniverses(outputs.Text);
                 AppSettings.ParseUniverses(inputs.Text);
+                int pollMs = ParseMs(pollInterval.Text, "ArtPoll interval", 2500);
+                int keepAliveMs = ParseMs(keepAlive.Text, "DMX keep-alive", 900);
                 s.ShortName = string.IsNullOrWhiteSpace(shortName.Text) ? "Art-Net Monitor" : shortName.Text.Trim();
                 s.LongName = longName.Text ?? "";
                 s.Style = ((ArtNetOption<ArtNetStyle>)style.SelectedItem!).Value;
@@ -81,8 +84,8 @@ public sealed class SettingsPage : ContentPage
                 s.OutputUniverses = outputs.Text ?? "";
                 s.InputUniverses = inputs.Text ?? "";
                 s.MergeMode = ((ArtNetOption<ArtNetMergeMode>)merge.SelectedItem!).Value;
-                s.PollIntervalMs = int.Parse(pollInterval.Text ?? "2500");
-                s.KeepAliveMs = int.Parse(keepAlive.Text ?? "900");
+                s.PollIntervalMs = pollMs;
+                s.KeepAliveMs = keepAliveMs;
                 s.ProductUrl = url.Text ?? "";
                 s.SendPolls = sendPolls;
                 s.BroadcastDmxWithoutSubscribers = broadcastDmx;
@@ -99,5 +102,12 @@ public sealed class SettingsPage : ContentPage
                 else message.Text = "Saved.";
             }, message),
             message);
+    }
+
+    private static int ParseMs(string? text, string what, int fallback)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return fallback;
+        if (!int.TryParse(text.Trim(), out int ms) || ms < 0) throw new FormatException($"{what} must be a whole number of milliseconds.");
+        return ms;
     }
 }
