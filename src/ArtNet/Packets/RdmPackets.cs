@@ -101,7 +101,7 @@ public sealed class ArtTodDataPacket : ArtNetPacket
         int blocks = Math.Max(1, (table.Count + ArtNetConstants.MaxUidsPerTodData - 1) / ArtNetConstants.MaxUidsPerTodData);
         // UidTotal is 16 bits and BlockCount 8 bits: larger tables cannot be described without wrapping.
         if (table.Count > ushort.MaxValue || blocks > byte.MaxValue + 1)
-            throw new ArgumentOutOfRangeException(nameof(table), table.Count, $"A TOD holds at most {Math.Min(ushort.MaxValue, (byte.MaxValue + 1) * ArtNetConstants.MaxUidsPerTodData)} UIDs.");
+            throw new ArgumentOutOfRangeException(nameof(table), table.Count, $"A TOD holds at most {Math.Min((int)ushort.MaxValue, (byte.MaxValue + 1) * ArtNetConstants.MaxUidsPerTodData)} UIDs.");
         for (int b = 0; b < blocks; b++)
         {
             var p = new ArtTodDataPacket

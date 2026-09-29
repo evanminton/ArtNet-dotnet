@@ -58,7 +58,7 @@ public class RobustnessTests
         var parsed = Assert.IsType<ArtPollReplyPacket>(ArtNetPacketParser.Parse(reply.ToArray()));
 
         Assert.Equal(4, parsed.PortCount);
-        Assert.Equal([new PortAddress(1), new PortAddress(2), new PortAddress(3), new PortAddress(4)], parsed.SubscribedAddresses);
+        Assert.Equal(new[] { new PortAddress(1), new PortAddress(2), new PortAddress(3), new PortAddress(4) }, parsed.SubscribedAddresses);
         Assert.True(parsed.IsSubscribedTo(new PortAddress(4)));
     }
 
@@ -103,7 +103,7 @@ public class RobustnessTests
     {
         var uids = Enumerable.Range(0, 450).Select(i => new RdmUid(0x7FF0, (uint)i)).ToArray();
         var blocks = ArtTodDataPacket.Split(new PortAddress(1), uids);
-        Assert.Equal([0, 1, 2], blocks.Select(b => (int)b.BlockCount));
+        Assert.Equal(new[] { 0, 1, 2 }, blocks.Select(b => (int)b.BlockCount));
         Assert.All(blocks, b => Assert.Equal(450, b.UidTotal));
     }
 
