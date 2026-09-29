@@ -1,4 +1,4 @@
-namespace ArtNet.Maui.Pages;
+namespace ArtNet.Shared.Pages;
 
 /// <summary>Small helpers for building pages in C#.</summary>
 public static class Ui

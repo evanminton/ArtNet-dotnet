@@ -56,6 +56,8 @@ catch (ArgumentException ex) { return Fail(ex.Message); }
 catch (InvalidOperationException ex) { return Fail(ex.Message); }
 catch (OverflowException ex) { return Fail(ex.Message); }
 catch (IOException ex) { return Fail(ex.Message); }
+catch (InvalidDataException ex) { return Fail(ex.Message); }
+catch (OperationCanceledException) { return Fail("Cancelled."); }
 catch (UnauthorizedAccessException ex) { return Fail(ex.Message); }
 catch (TimeoutException ex) { return Fail(ex.Message); }
 catch (System.Net.Sockets.SocketException ex) { return Fail($"Network error: {ex.Message} (is another Art-Net application holding UDP 6454 exclusively?)"); }
@@ -183,14 +185,14 @@ static async Task<int> Watch(Options o)
         // Announce an output port so spec-compliant controllers unicast this universe to us.
         if (o.Has("subscribe")) s.Ports.Add(ArtNetPortConfig.Output(u, "Monitor"));
     });
-    byte[]? last = null;
+    // Written on the receive thread, read below: one reference so data and info always belong together.
+    Tuple<byte[], string>? last = null;
     var lastPrint = DateTime.MinValue;
-    string info = "";
     node.UniverseChanged += (_, e) =>
     {
         if (e.Address != u) return;
-        last = e.Data;
-        info = $"{string.Join(" + ", e.Sources)}{(e.Merging ? " (merging)" : "")}{(e.Synchronous ? " (sync)" : "")}";
+        var info = $"{string.Join(" + ", e.Sources)}{(e.Merging ? " (merging)" : "")}{(e.Synchronous ? " (sync)" : "")}";
+        Volatile.Write(ref last, Tuple.Create(e.Data, info));
     };
     Console.WriteLine($"Watching universe {u}. Ctrl+C to stop.");
     var until = o.Seconds > 0 ? DateTime.UtcNow.AddSeconds(o.Seconds) : DateTime.MaxValue;
@@ -198,10 +200,11 @@ static async Task<int> Watch(Options o)
     while (!cts.IsCancellationRequested && DateTime.UtcNow < until)
     {
         await Task.Delay(250);
-        var data = last;
-        if (data is null || DateTime.UtcNow - lastPrint < TimeSpan.FromMilliseconds(o.Int("interval", 500))) continue;
+        var frame = Volatile.Read(ref last);
+        if (frame is null || DateTime.UtcNow - lastPrint < TimeSpan.FromMilliseconds(o.Int("interval", 500))) continue;
         lastPrint = DateTime.UtcNow;
         var uni = node.GetUniverse(u);
+        var (data, info) = frame;
         Console.WriteLine($"── {DateTime.Now:HH:mm:ss.fff} · {info} · {uni?.PacketCount} packets, {uni?.DroppedCount} dropped, {uni?.LastLength} ch");
         Console.WriteLine(ArtNetFormatter.DmxGrid(data, o.Has("percent")));
     }
@@ -514,7 +517,7 @@ static async Task<int> RdmSub(Options o)
         SubCount = o.Positional.Count > 5 ? ushort.Parse(o.Positional[5], CultureInfo.InvariantCulture) : (ushort)1,
     };
     p.Values.AddRange(o.Positional.Skip(6).Select(v => ushort.Parse(v, CultureInfo.InvariantCulture)));
-    var tcs = new TaskCompletionSource<ArtRdmSubPacket>();
+    var tcs = new TaskCompletionSource<ArtRdmSubPacket>(TaskCreationOptions.RunContinuationsAsynchronously);
     node.RdmSubReceived += (_, e) => { if (e.RemoteEndPoint.Address.Equals(target.Address) && e.Packet.Uid == p.Uid) tcs.TrySetResult(e.Packet); };
     await node.SendRdmSubAsync(target.Address, p);
     Console.WriteLine(ArtNetFormatter.Format(p));

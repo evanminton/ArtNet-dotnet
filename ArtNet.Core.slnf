@@ -1,0 +1,10 @@
+{
+  "solution": {
+    "path": "ArtNet.slnx",
+    "projects": [
+      "src\\ArtNet\\ArtNet.csproj",
+      "tools\\ArtNet.Monitor\\ArtNet.Monitor.csproj",
+      "tests\\ArtNet.Tests\\ArtNet.Tests.csproj"
+    ]
+  }
+}

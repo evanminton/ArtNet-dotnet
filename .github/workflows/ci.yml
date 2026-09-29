@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  library:
+    name: Library, CLI and tests (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+      - run: dotnet build ArtNet.Core.slnf -c Release
+      - run: dotnet test ArtNet.Core.slnf -c Release --no-build
+
+  windows-apps:
+    name: Art-Net Desktop and MAUI sample (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+      - run: dotnet workload install maui-windows
+      - run: dotnet build apps/ArtNet.Desktop/ArtNet.Desktop.csproj -c Release
+      - run: dotnet build samples/ArtNet.Maui/ArtNet.Maui.csproj -c Release -f net10.0-windows10.0.19041.0

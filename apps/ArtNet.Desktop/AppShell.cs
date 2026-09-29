@@ -1,4 +1,5 @@
-using ArtNet.Desktop.Pages;
+using ArtNet.Shared.Pages;
+using ArtNet.Shared.Services;
 using ArtNet.Desktop.Services;
 
 namespace ArtNet.Desktop;

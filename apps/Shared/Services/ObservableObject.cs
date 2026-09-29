@@ -1,7 +1,7 @@
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
 
-namespace ArtNet.Maui.Services;
+namespace ArtNet.Shared.Services;
 
 /// <summary>Minimal INotifyPropertyChanged base (no toolkit dependency).</summary>
 public abstract class ObservableObject : INotifyPropertyChanged

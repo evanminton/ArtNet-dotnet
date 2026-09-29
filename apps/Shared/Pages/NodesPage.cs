@@ -1,7 +1,7 @@
-using ArtNet.Maui.Services;
+using ArtNet.Shared.Services;
 using ArtNet.Networking;
 
-namespace ArtNet.Maui.Pages;
+namespace ArtNet.Shared.Pages;
 
 /// <summary>Discovered Art-Net devices (one row per IP / bind index).</summary>
 public sealed class NodesPage : ContentPage
@@ -28,13 +28,13 @@ public sealed class NodesPage : ContentPage
         var locateAll = Ui.Button("Locate all", async () =>
         {
             var node = _service.RequireNode();
-            foreach (var n in _service.Nodes.Where(n => !n.IsLocal))
+            foreach (var n in _service.Nodes.Where(n => !n.IsLocal).ToArray()) // snapshot: the list changes while awaiting
                 await node.SendAddressAsync(n.Address, ArtAddressPacket.ForCommand(ArtNetAddressCommand.LedLocate, n.BindIndex), TimeSpan.FromMilliseconds(300));
         }, error);
         var normalAll = Ui.Button("LEDs normal", async () =>
         {
             var node = _service.RequireNode();
-            foreach (var n in _service.Nodes.Where(n => !n.IsLocal))
+            foreach (var n in _service.Nodes.Where(n => !n.IsLocal).ToArray()) // snapshot: the list changes while awaiting
                 await node.SendAddressAsync(n.Address, ArtAddressPacket.ForCommand(ArtNetAddressCommand.LedNormal, n.BindIndex), TimeSpan.FromMilliseconds(300));
         }, error);
 

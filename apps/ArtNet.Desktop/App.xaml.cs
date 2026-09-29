@@ -1,3 +1,4 @@
+using ArtNet.Shared.Services;
 using ArtNet.Desktop.Services;
 
 namespace ArtNet.Desktop;
@@ -18,12 +19,14 @@ public partial class App : Application
         WindowPlacement.Restore(window);
         window.Created += async (_, _) =>
         {
+            WindowPlacement.RestoreMaximized(window);
             if (_service.Settings.AutoStart) await _service.StartAsync();
         };
-        window.Destroying += async (_, _) =>
+        // Synchronous: the process can exit before an awaited stop finishes.
+        window.Destroying += (_, _) =>
         {
             WindowPlacement.Save(window);
-            await _service.StopAsync();
+            _service.Shutdown();
         };
         return window;
     }

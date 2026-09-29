@@ -1,14 +1,16 @@
 using System.Diagnostics;
 using ArtNet.Networking;
+using ArtNet.Shared.Services;
 using System.Text;
 
 namespace ArtNet.Desktop.Services;
 
-/// <summary>Window size and position, remembered between runs.</summary>
+/// <summary>Window size, position and maximized state, remembered between runs.</summary>
 public static class WindowPlacement
 {
     public const double DefaultWidth = 1280, DefaultHeight = 820, MinWidth = 960, MinHeight = 600;
 
+    /// <summary>Applies the saved normal size and position. Call before the window is shown.</summary>
     public static void Restore(Window window)
     {
         var p = Preferences.Default;
@@ -17,24 +19,60 @@ public static class WindowPlacement
         window.Width = Math.Max(MinWidth, p.Get("Window.Width", DefaultWidth));
         window.Height = Math.Max(MinHeight, p.Get("Window.Height", DefaultHeight));
         double x = p.Get("Window.X", double.NaN), y = p.Get("Window.Y", double.NaN);
-        // Ignore positions that are far off-screen (monitor unplugged since the last run).
-        var display = DeviceDisplay.Current.MainDisplayInfo;
-        double screenW = display.Width / Math.Max(1, display.Density), screenH = display.Height / Math.Max(1, display.Density);
-        if (!double.IsNaN(x) && !double.IsNaN(y) && x > -window.Width + 80 && y >= 0 && x < screenW * 3 - 80 && y < screenH * 3 - 80)
+        // Ignore a position whose title bar is on no monitor (monitor unplugged since the last run). Monitors may sit
+        // left of or above the primary one, so negative coordinates are fine.
+        if (!double.IsNaN(x) && !double.IsNaN(y) && IsOnAMonitor(x + 80, y + 10))
         {
             window.X = x;
             window.Y = y;
         }
     }
 
+    /// <summary>Maximizes the window if it was maximized when it closed. Call once the window is created.</summary>
+    public static void RestoreMaximized(Window window)
+    {
+        if (!Preferences.Default.Get("Window.Maximized", false)) return;
+#if WINDOWS
+        if (Presenter(window) is { } presenter) presenter.Maximize();
+#endif
+    }
+
     public static void Save(Window window)
     {
         if (window.Width <= 0 || window.Height <= 0) return;
         var p = Preferences.Default;
+        bool maximized = false;
+#if WINDOWS
+        maximized = Presenter(window)?.State == Microsoft.UI.Windowing.OverlappedPresenterState.Maximized;
+#endif
+        p.Set("Window.Maximized", maximized);
+        if (maximized) return; // keep the normal size and position saved while it was not maximized
         p.Set("Window.Width", window.Width);
         p.Set("Window.Height", window.Height);
         p.Set("Window.X", window.X);
         p.Set("Window.Y", window.Y);
+    }
+
+#if WINDOWS
+    private static Microsoft.UI.Windowing.OverlappedPresenter? Presenter(Window window) =>
+        (window.Handler?.PlatformView as Microsoft.UI.Xaml.Window)?.AppWindow.Presenter as Microsoft.UI.Windowing.OverlappedPresenter;
+
+    [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+    private struct POINT { public int X, Y; }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern IntPtr MonitorFromPoint(POINT pt, uint flags);
+#endif
+
+    private static bool IsOnAMonitor(double x, double y)
+    {
+#if WINDOWS
+        const uint MONITOR_DEFAULTTONULL = 0;
+        double density = Math.Max(1, DeviceDisplay.Current.MainDisplayInfo.Density); // DIPs → physical pixels
+        return MonitorFromPoint(new POINT { X = (int)(x * density), Y = (int)(y * density) }, MONITOR_DEFAULTTONULL) != IntPtr.Zero;
+#else
+        return true;
+#endif
     }
 }
 

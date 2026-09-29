@@ -145,6 +145,18 @@ public class ArtNzsPacket : ArtNetPacket
 
     protected virtual void ReadData(ReadOnlySpan<byte> d) => Data = d.ToArray();
 
+    /// <summary>
+    /// Throws when the packet breaks the spec: start code 0x00 or 0xCC, or no data. Received packets are decoded as
+    /// they arrived (and re-serialise unchanged for logs and replay); <see cref="Networking.ArtNetNode"/> calls this
+    /// before sending.
+    /// </summary>
+    public void Validate()
+    {
+        if (StartCode is 0x00 or ArtNetConstants.RdmStartCode)
+            throw new InvalidOperationException($"ArtNzs start code 0x{StartCode:X2} is not allowed (use ArtDmx for 0x00, ArtRdm for 0xCC).");
+        if (DataLength == 0) throw new InvalidOperationException("ArtNzs needs 1-512 data slots.");
+    }
+
     protected override void WriteBody(Span<byte> p)
     {
         p[12] = Sequence;

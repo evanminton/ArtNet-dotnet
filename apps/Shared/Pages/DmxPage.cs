@@ -1,7 +1,7 @@
-using ArtNet.Desktop.Services;
+using ArtNet.Shared.Services;
 using ArtNet.Networking;
 
-namespace ArtNet.Desktop.Pages;
+namespace ArtNet.Shared.Pages;
 
 /// <summary>Draws 512 DMX levels as a 16-column grid with channel numbers and a level bar per cell.</summary>
 public sealed class DmxGridDrawable : IDrawable
@@ -89,8 +89,8 @@ public sealed class DmxPage : ContentPage
                 // Through the node: ArtAddress / ArtInput may change the ports on the receive thread.
                 node.UpdatePorts(ports =>
                 {
-                    var list = ports.Where(p => p.Name != "Monitor").ToList();
-                    if (on) list.Add(ArtNetPortConfig.Output(a, "Monitor"));
+                    var list = ports.Where(p => p.Name != ArtNetService.MonitorPortName).ToList();
+                    if (on) list.Add(ArtNetPortConfig.Output(a, ArtNetService.MonitorPortName));
                     return list;
                 });
                 await node.NotifyChangedAsync();
@@ -185,8 +185,8 @@ public sealed class DmxPage : ContentPage
         async Task SetAll(byte v)
         {
             Array.Fill(_output, v);
+            _outputView.Invalidate(); // before sending, so the grid matches _output even when the send fails
             await SendAsync(status, physical);
-            _outputView.Invalidate();
         }
 
         return Ui.Card("Output (ArtDmx)",

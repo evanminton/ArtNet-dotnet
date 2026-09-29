@@ -1,4 +1,4 @@
-namespace ArtNet.Maui.Pages;
+namespace ArtNet.Shared.Pages;
 
 /// <summary>One option of the reference list.</summary>
 public sealed record ReferenceRow(string Group, string Name, string Raw, string Description);
