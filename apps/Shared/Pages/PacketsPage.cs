@@ -1,6 +1,6 @@
-using ArtNet.Desktop.Services;
+using ArtNet.Shared.Services;
 
-namespace ArtNet.Desktop.Pages;
+namespace ArtNet.Shared.Pages;
 
 /// <summary>Live packet log with OpCode filter; tap a packet for every field in readable form and its raw bytes.</summary>
 public sealed class PacketsPage : ContentPage

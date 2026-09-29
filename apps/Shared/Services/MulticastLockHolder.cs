@@ -1,4 +1,4 @@
-namespace ArtNet.Maui.Services;
+namespace ArtNet.Shared.Services;
 
 /// <summary>
 /// Android filters broadcast/multicast packets on Wi-Fi unless a multicast lock is held.

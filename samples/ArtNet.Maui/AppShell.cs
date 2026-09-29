@@ -1,5 +1,5 @@
-using ArtNet.Maui.Pages;
-using ArtNet.Maui.Services;
+using ArtNet.Shared.Pages;
+using ArtNet.Shared.Services;
 
 namespace ArtNet.Maui;
 

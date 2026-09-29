@@ -1,10 +1,13 @@
-namespace ArtNet.Desktop.Services;
+using System.Net;
+using System.Net.Sockets;
+
+namespace ArtNet.Shared.Services;
 
 /// <summary>User settings persisted with MAUI Preferences.</summary>
 public sealed class AppSettings
 {
-    public string ShortName { get; set; } = "Art-Net Desktop";
-    public string LongName { get; set; } = "Art-Net Desktop (ArtNet.NET Windows app)";
+    public string ShortName { get; set; } = AppBrand.Name;
+    public string LongName { get; set; } = AppBrand.LongName;
     public ArtNetStyle Style { get; set; } = ArtNetStyle.Config;
     /// <summary>Local IPv4 address of the chosen interface; empty = automatic.</summary>
     public string InterfaceAddress { get; set; } = string.Empty;
@@ -12,6 +15,8 @@ public sealed class AppSettings
     public string BroadcastAddress { get; set; } = string.Empty;
     public bool SendPolls { get; set; } = true;
     public int PollIntervalMs { get; set; } = 2500;
+    /// <summary>Range the node accepts for <see cref="PollIntervalMs"/>.</summary>
+    public const int MinPollIntervalMs = 1000, MaxPollIntervalMs = 10000;
     /// <summary>Output ports announced (comma separated Port-Addresses) – compliant controllers unicast these to us.</summary>
     public string OutputUniverses { get; set; } = string.Empty;
     /// <summary>Input ports announced (comma separated Port-Addresses).</summary>
@@ -74,4 +79,22 @@ public sealed class AppSettings
     public static IReadOnlyList<PortAddress> ParseUniverses(string? text) =>
         (text ?? string.Empty).Split([',', ';', ' '], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .Select(PortAddress.Parse).Distinct().ToArray();
+
+    /// <summary>
+    /// Parses a dotted-quad IPv4 address. Unlike <see cref="IPAddress.TryParse(string?, out IPAddress?)"/> it rejects
+    /// short forms such as "2.255.255", which would silently mean 2.255.0.255.
+    /// </summary>
+    public static bool TryParseIPv4(string? text, out IPAddress address)
+    {
+        address = IPAddress.None;
+        text = text?.Trim();
+        if (string.IsNullOrEmpty(text) || text.Split('.').Length != 4) return false;
+        if (!IPAddress.TryParse(text, out var parsed) || parsed.AddressFamily != AddressFamily.InterNetwork) return false;
+        address = parsed;
+        return true;
+    }
+
+    /// <summary><see cref="TryParseIPv4"/> that throws a readable <see cref="FormatException"/>.</summary>
+    public static IPAddress ParseIPv4(string? text, string what) =>
+        TryParseIPv4(text, out var a) ? a : throw new FormatException($"{what} must be an IPv4 address such as 2.255.255.255.");
 }

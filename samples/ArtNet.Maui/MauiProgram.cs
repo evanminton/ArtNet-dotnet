@@ -1,4 +1,4 @@
-using ArtNet.Maui.Services;
+using ArtNet.Shared.Services;
 
 namespace ArtNet.Maui;
 

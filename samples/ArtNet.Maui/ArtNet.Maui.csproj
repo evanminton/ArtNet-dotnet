@@ -44,6 +44,11 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Pages and services shared with the other app (apps/Shared). -->
+    <Compile Include="..\..\apps\Shared\**\*.cs" LinkBase="Shared" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\..\src\ArtNet\ArtNet.csproj" />
   </ItemGroup>
 

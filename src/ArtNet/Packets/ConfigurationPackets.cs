@@ -183,6 +183,8 @@ public sealed class ArtAddressPacket : ArtNetPacket
     /// <summary>Programs Net, Sub-Net and output port 1 universe so that port 1 outputs <paramref name="address"/>.</summary>
     public ArtAddressPacket SetOutputAddress(PortAddress address, int port = 0)
     {
+        ArgumentOutOfRangeException.ThrowIfNegative(port);
+        ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(port, SwOut.Length);
         NetSwitch = Program(address.Net);
         SubSwitch = Program(address.SubNet);
         SwOut[port] = Program(address.Universe);
@@ -192,6 +194,8 @@ public sealed class ArtAddressPacket : ArtNetPacket
     /// <summary>Programs Net, Sub-Net and input port universe so that the port inputs to <paramref name="address"/>.</summary>
     public ArtAddressPacket SetInputAddress(PortAddress address, int port = 0)
     {
+        ArgumentOutOfRangeException.ThrowIfNegative(port);
+        ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(port, SwIn.Length);
         NetSwitch = Program(address.Net);
         SubSwitch = Program(address.SubNet);
         SwIn[port] = Program(address.Universe);

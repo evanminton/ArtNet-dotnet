@@ -222,6 +222,12 @@ public sealed class ArtNetNode : IAsyncDisposable, IDisposable
                 try { await Task.WhenAll(loops).ConfigureAwait(false); } catch { /* loops end on dispose */ }
                 cts.Dispose(); // only once no loop can still observe the token
             }
+            else
+            {
+                // This thread may be one of the loops, so dispose once they have all ended.
+                _ = Task.WhenAll(loops).ContinueWith(_ => cts.Dispose(), CancellationToken.None,
+                    TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+            }
 
             lock (_waiters)
             {
@@ -234,6 +240,7 @@ public sealed class ArtNetNode : IAsyncDisposable, IDisposable
             {
                 _pendingSync.Clear();
                 _syncActive = false;
+                _lastDmxSource = null; // a restarted node must not ignore ArtSync from a new controller
             }
         }
         finally { _lifecycle.Release(); }
@@ -249,6 +256,7 @@ public sealed class ArtNetNode : IAsyncDisposable, IDisposable
     public async ValueTask SendAsync(ArtNetPacket packet, IPEndPoint target, CancellationToken cancellationToken = default)
     {
         var socket = _socket ?? throw new InvalidOperationException("The node is not running. Call StartAsync first.");
+        if (packet is ArtNzsPacket nzs) nzs.Validate();
         byte[] bytes = packet.ToArray();
         await socket.SendToAsync(bytes, SocketFlags.None, target, cancellationToken).ConfigureAwait(false);
     }
@@ -644,7 +652,10 @@ public sealed class ArtNetNode : IAsyncDisposable, IDisposable
         return results.ToArray();
     }
 
-    /// <summary>Merges ArtTodData blocks into complete tables per (source, Port-Address).</summary>
+    /// <summary>
+    /// Merges ArtTodData blocks into one table per Port-Address: the distinct UIDs reported by every node on that
+    /// universe. Filter <paramref name="packets"/> by source first for a single node's table.
+    /// </summary>
     public static IReadOnlyDictionary<PortAddress, IReadOnlyList<RdmUid>> MergeTod(IEnumerable<ArtTodDataPacket> packets) =>
         packets.Where(p => p.CommandResponse == ArtNetTodDataCommand.TodFull)
                .GroupBy(p => p.PortAddress)

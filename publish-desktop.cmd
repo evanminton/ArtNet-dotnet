@@ -19,7 +19,13 @@ if errorlevel 1 (
   exit /b 1
 )
 if exist "%ZIP%" del /q "%ZIP%"
-powershell -NoProfile -Command "Compress-Archive -Path '%OUT%\*' -DestinationPath '%ZIP%'" >> "%LOG%" 2>&1
+rem Paths go through the environment so quotes in the repo path cannot break the PowerShell command.
+powershell -NoProfile -Command "$ErrorActionPreference = 'Stop'; Compress-Archive -Path (Join-Path $env:OUT '*') -DestinationPath $env:ZIP" >> "%LOG%" 2>&1
+if errorlevel 1 (
+  echo ZIP FAILED>> "%LOG%"
+  echo Zipping failed. See artifacts\desktop-log.txt
+  exit /b 1
+)
 echo.>> "%LOG%"
 echo OK: %OUT%\ArtNetDesktop.exe>> "%LOG%"
 echo OK: %ZIP%>> "%LOG%"

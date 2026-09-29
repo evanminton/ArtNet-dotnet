@@ -273,16 +273,18 @@ public sealed class ArtPollReplyPacket : ArtNetPacket
 
     public bool IsRootDevice => BindIndex <= 1;
 
-    /// <summary>Ports actually described (NumPorts, capped to 4; falls back to PortTypes when NumPorts is 0).</summary>
+    /// <summary>
+    /// Ports actually described: the larger of NumPorts (capped to 4) and the highest port PortTypes marks as input or
+    /// output. The spec makes the port information implicit in PortTypes, and some nodes under-report NumPorts.
+    /// </summary>
     public int PortCount
     {
         get
         {
             int n = Math.Min((int)NumPorts, ArtNetConstants.PortsPerBind);
-            if (n > 0) return n;
-            for (int i = ArtNetConstants.PortsPerBind - 1; i >= 0; i--)
+            for (int i = ArtNetConstants.PortsPerBind - 1; i >= n; i--)
                 if ((PortTypes[i] & 0xC0) != 0) return i + 1;
-            return 0;
+            return n;
         }
     }
 

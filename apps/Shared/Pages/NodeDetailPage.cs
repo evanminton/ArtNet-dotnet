@@ -1,8 +1,8 @@
 using System.Net;
-using ArtNet.Desktop.Services;
+using ArtNet.Shared.Services;
 using ArtNet.Networking;
 
-namespace ArtNet.Desktop.Pages;
+namespace ArtNet.Shared.Pages;
 
 /// <summary>
 /// Everything about one device: every ArtPollReply field in readable form, plus ArtAddress (names, universes,
@@ -178,8 +178,8 @@ public sealed class NodeDetailPage : ContentPage
             Ui.Row(Ui.Field("IP address", ip), Ui.Field("Subnet mask", mask), Ui.Field("Default gateway", gw)),
             Ui.Row(
                 Ui.Button("Read (enquiry)", () => Send(ArtIpProgPacket.Enquiry()), status),
-                Ui.Button("Program static", () => Send(ArtIpProgPacket.Program(IPAddress.Parse(ip.Text!), IPAddress.Parse(mask.Text!),
-                    string.IsNullOrWhiteSpace(gw.Text) ? null : IPAddress.Parse(gw.Text))), status),
+                Ui.Button("Program static", () => Send(ArtIpProgPacket.Program(AppSettings.ParseIPv4(ip.Text, "IP"), AppSettings.ParseIPv4(mask.Text, "Mask"),
+                    string.IsNullOrWhiteSpace(gw.Text) ? null : AppSettings.ParseIPv4(gw.Text, "Gateway"))), status),
                 Ui.Button("Enable DHCP", () => Send(ArtIpProgPacket.EnableDhcp()), status),
                 Ui.Button("Reset to default", () => Send(ArtIpProgPacket.ResetToDefault()), status),
                 Ui.Button("Art-Net default IP", () =>

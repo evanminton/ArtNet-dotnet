@@ -78,13 +78,15 @@ public sealed class ArtNetFirmwareFile
     /// <summary>Encodes the file (recomputes the checksum when <paramref name="updateChecksum"/> is true).</summary>
     public byte[] ToArray(bool updateChecksum = true)
     {
+        if (OemCodes.Count > OemCount)
+            throw new InvalidOperationException($"A firmware file lists at most {OemCount} OEM codes; this one has {OemCodes.Count}.");
         if (updateChecksum) Checksum = ComputeChecksum(Data);
         int dataBytes = (int)DataWords * 2;
         var b = new byte[HeaderSize + dataBytes];
         Bin.U16BE(b, 0, Checksum);
         Bin.U16BE(b, 2, FirmwareVersion);
         Bin.Ascii(b, 4, UserNameSize, UserName);
-        for (int i = 0; i < Math.Min(OemCodes.Count, OemCount); i++) Bin.U16BE(b, 34 + 2 * i, OemCodes[i]);
+        for (int i = 0; i < OemCodes.Count; i++) Bin.U16BE(b, 34 + 2 * i, OemCodes[i]);
         Bin.U32BE(b, 1056, DataWords);
         Data.CopyTo(b, HeaderSize);
         return b;

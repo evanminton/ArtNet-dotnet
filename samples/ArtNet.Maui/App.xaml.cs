@@ -1,4 +1,4 @@
-using ArtNet.Maui.Services;
+using ArtNet.Shared.Services;
 
 namespace ArtNet.Maui;
 
@@ -19,7 +19,8 @@ public partial class App : Application
         {
             if (_service.Settings.AutoStart) await _service.StartAsync();
         };
-        window.Destroying += async (_, _) => await _service.StopAsync();
+        // Synchronous: the process can exit before an awaited stop finishes.
+        window.Destroying += (_, _) => _service.Shutdown();
         return window;
     }
 }

@@ -1,7 +1,7 @@
 using System.Net;
-using ArtNet.Desktop.Services;
+using ArtNet.Shared.Services;
 
-namespace ArtNet.Desktop.Pages;
+namespace ArtNet.Shared.Pages;
 
 /// <summary>
 /// Show control and the remaining packets: ArtTimeCode generator, ArtTrigger, ArtCommand, ArtDiagData, ArtSync,
@@ -20,7 +20,15 @@ public sealed class ShowPage : ContentPage
     }
 
     private static IPAddress? Target(Entry e) =>
-        string.IsNullOrWhiteSpace(e.Text) ? null : IPAddress.Parse(e.Text.Trim());
+        string.IsNullOrWhiteSpace(e.Text) ? null : AppSettings.ParseIPv4(e.Text, "Destination");
+
+    private void StopTimecode()
+    {
+        var cts = Interlocked.Exchange(ref _timecodeCts, null);
+        if (cts is null) return;
+        cts.Cancel();
+        cts.Dispose();
+    }
 
     private View ReceivedCard()
     {
@@ -84,8 +92,9 @@ public sealed class ShowPage : ContentPage
                 }, status),
                 Ui.Button("Run", () =>
                 {
-                    _timecodeCts?.Cancel();
+                    StopTimecode();
                     var cts = _timecodeCts = new CancellationTokenSource();
+                    var token = cts.Token; // stays usable after StopTimecode disposes the source
                     var p = Build();
                     var node = _service.RequireNode();
                     var target = Target(to);
@@ -95,14 +104,14 @@ public sealed class ShowPage : ContentPage
                         long frame = 0;
                         try
                         {
-                            while (!cts.IsCancellationRequested)
+                            while (!token.IsCancellationRequested)
                             {
                                 await node.SendTimeCodeAsync(p, target);
                                 if (frame % 3 == 0) { var text = p.TimeText; MainThread.BeginInvokeOnMainThread(() => running.Text = text); }
                                 p.Increment();
                                 frame++;
                                 var due = TimeSpan.FromSeconds(frame / p.FrameRate) - sw.Elapsed;
-                                if (due > TimeSpan.Zero) await Task.Delay(due, cts.Token);
+                                if (due > TimeSpan.Zero) await Task.Delay(due, token);
                             }
                         }
                         catch (OperationCanceledException) { }
@@ -111,7 +120,7 @@ public sealed class ShowPage : ContentPage
                     status.Text = $"Running {p.Type.ToDisplayName()} from {p.TimeText}.";
                     return Task.CompletedTask;
                 }, status),
-                Ui.Button("Stop", () => { _timecodeCts?.Cancel(); status.Text = "Stopped."; })),
+                Ui.Button("Stop", () => { StopTimecode(); status.Text = "Stopped."; })),
             running,
             status);
     }
@@ -171,7 +180,7 @@ public sealed class ShowPage : ContentPage
     private View DiagCard()
     {
         var status = Ui.Caption();
-        var text = Ui.Entry("Hello from Art-Net Desktop", "text", 360);
+        var text = Ui.Entry("Hello from " + AppBrand.Name, "text", 360);
         var priorities = ArtNetOptionCatalog.DiagnosticPriorities;
         var priority = Ui.Picker(priorities, 0, 160);
         var port = Ui.Entry("0", "logical port", 80, Keyboard.Numeric);

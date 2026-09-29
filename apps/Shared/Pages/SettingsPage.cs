@@ -1,7 +1,7 @@
-using ArtNet.Maui.Services;
+using ArtNet.Shared.Services;
 using ArtNet.Networking;
 
-namespace ArtNet.Maui.Pages;
+namespace ArtNet.Shared.Pages;
 
 /// <summary>This node's identity, network interface, ports and behaviour. Saved with Preferences; applying restarts the node.</summary>
 public sealed class SettingsPage : ContentPage
@@ -27,6 +27,8 @@ public sealed class SettingsPage : ContentPage
         var interfaces = new List<InterfaceOption> { new("Automatic (default interface)", "") };
         interfaces.AddRange(ArtNetNetworkInterface.GetAll().Where(n => n.IsUp)
             .Select(n => new InterfaceOption($"{n.Name} – {n.Address} (broadcast {n.Broadcast})", n.Address.ToString())));
+        if (!string.IsNullOrWhiteSpace(s.InterfaceAddress) && interfaces.All(i => i.Address != s.InterfaceAddress))
+            interfaces.Add(new($"{s.InterfaceAddress} – not available (the default interface is used)", s.InterfaceAddress));
         var iface = Ui.Picker(interfaces, Math.Max(0, interfaces.FindIndex(i => i.Address == s.InterfaceAddress)), 420);
         var broadcast = Ui.Entry(s.BroadcastAddress, "e.g. 2.255.255.255 (empty = from interface)", 260);
 
@@ -49,6 +51,17 @@ public sealed class SettingsPage : ContentPage
         }
         Preview();
 
+        // A controller can reprogram names and ports (ArtAddress / ArtInput); the service saves them, show them here.
+        service.SettingsChanged += (_, _) =>
+        {
+            shortName.Text = s.ShortName;
+            longName.Text = s.LongName;
+            outputs.Text = s.OutputUniverses;
+            inputs.Text = s.InputUniverses;
+            Preview();
+            message.Text = "A controller reprogrammed this node; the new names and ports were saved.";
+        };
+
         Content = Ui.Page(
             Ui.Card("This node",
                 Ui.Row(Ui.Field("Short name (17)", shortName), Ui.Field("Long name (63)", longName)),
@@ -58,7 +71,7 @@ public sealed class SettingsPage : ContentPage
                 Ui.Field("Interface (sets the reported IP and the directed broadcast address)", iface),
                 Ui.Field("Broadcast address override", broadcast),
                 Ui.Caption("Art-Net's native networks are 2.x.x.x and 10.x.x.x with mask 255.0.0.0 (broadcast 2.255.255.255 / 10.255.255.255)."),
-                Ui.Row(Ui.Field("ArtPoll interval (ms, spec 2500-3000)", pollInterval), Ui.Switch("Send ArtPoll (controller)", sendPolls, v => sendPolls = v))),
+                Ui.Row(Ui.Field("ArtPoll interval (ms, 1000-10000; spec 2500-3000)", pollInterval), Ui.Switch("Send ArtPoll (controller)", sendPolls, v => sendPolls = v))),
             Ui.Card("Ports",
                 Ui.Caption("Each port is announced in its own ArtPollReply (bind index 1, 2, …). Output ports make compliant controllers unicast those universes to this app."),
                 Ui.Row(Ui.Field("Output universes", outputs), Ui.Field("Input universes", inputs), Ui.Field("Merge mode", merge)),
@@ -75,8 +88,11 @@ public sealed class SettingsPage : ContentPage
                 AppSettings.ParseUniverses(outputs.Text);
                 AppSettings.ParseUniverses(inputs.Text);
                 int pollMs = ParseMs(pollInterval.Text, "ArtPoll interval", 2500);
+                if (pollMs is < AppSettings.MinPollIntervalMs or > AppSettings.MaxPollIntervalMs)
+                    throw new FormatException($"ArtPoll interval must be {AppSettings.MinPollIntervalMs}-{AppSettings.MaxPollIntervalMs} ms.");
                 int keepAliveMs = ParseMs(keepAlive.Text, "DMX keep-alive", 900);
-                s.ShortName = string.IsNullOrWhiteSpace(shortName.Text) ? "Art-Net Monitor" : shortName.Text.Trim();
+                if (!string.IsNullOrWhiteSpace(broadcast.Text)) AppSettings.ParseIPv4(broadcast.Text, "Broadcast address override");
+                s.ShortName = string.IsNullOrWhiteSpace(shortName.Text) ? AppBrand.Name : shortName.Text.Trim();
                 s.LongName = longName.Text ?? "";
                 s.Style = ((ArtNetOption<ArtNetStyle>)style.SelectedItem!).Value;
                 s.InterfaceAddress = (iface.SelectedItem as InterfaceOption)?.Address ?? "";

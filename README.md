@@ -5,7 +5,8 @@ A dependency-free .NET 10 implementation of **Art-Net 4** (protocol revision 14,
 Art-Net™ Designed by and Copyright Artistic Licence.
 
 ```
-ArtNet.slnx                   everything (the MAUI app needs the MAUI workload; maui-android too outside Windows)
+ArtNet.slnx                   everything – Windows only (Art-Net Desktop targets Windows; the MAUI app needs the MAUI workload)
+ArtNet.Core.slnf              library, CLI and tests – builds on Windows, Linux and macOS
 ├─ src/ArtNet                 library (net10.0, AOT/trim compatible, no NuGet dependencies)
 │  ├─ Protocol/               constants, enums (Tables 1-7), PortAddress
 │  ├─ Packets/                codec for every packet, parser, formatter
@@ -16,9 +17,12 @@ ArtNet.slnx                   everything (the MAUI app needs the MAUI workload; 
 ├─ tools/ArtNet.Monitor       artnet-monitor CLI (dotnet tool)
 ├─ tests/ArtNet.Tests         xUnit tests (byte offsets from the spec, round trips, merge, sync, programming)
 ├─ apps/ArtNet.Desktop        Art-Net Desktop – standalone Windows MAUI app (unpackaged, self-contained)
+├─ apps/Shared                pages and services compiled into both apps (linked, not a project)
 ├─ samples/ArtNet.Maui        Art-Net Monitor – .NET MAUI app (Windows, Android, iOS, Mac Catalyst)
 ├─ build.cmd                  Debug + Release build of everything, tests, log in artifacts\build-log.txt
-└─ publish-desktop.cmd        standalone Art-Net Desktop folder + zip in artifacts\desktop
+├─ build-android.cmd          build.cmd plus the Android app
+├─ publish-desktop.cmd        standalone Art-Net Desktop folder + zip in artifacts\desktop
+└─ global.json                pins the .NET 10 SDK (10.0.100 or a later feature band)
 ```
 
 ## Build
@@ -28,7 +32,7 @@ ArtNet.slnx                   everything (the MAUI app needs the MAUI workload; 
 .\build.cmd Release            # one configuration
 .\publish-desktop.cmd          # standalone Windows app → artifacts\desktop\win-x64 + zip (arg: win-arm64 / win-x86)
 .\build-android.cmd            # also the Android app (dotnet workload install maui-android first)
-dotnet test  tests/ArtNet.Tests -c Release
+dotnet test  ArtNet.Core.slnf -c Release       # any OS; CI runs this on Linux
 dotnet run   --project tools/ArtNet.Monitor -- nodes
 dotnet build samples/ArtNet.Maui -c Release -f net10.0-windows10.0.19041.0   # needs: dotnet workload install maui
 dotnet build samples/ArtNet.Maui -c Release -f net10.0-android -p:IncludeAndroid=true
