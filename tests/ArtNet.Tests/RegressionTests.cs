@@ -289,4 +289,89 @@ public class RegressionTests
         Assert.Empty(errors);
         Assert.Single(settings.Ports); // last update removed the second port
     }
+    // ------------------------------------------------------------------ full review 2026-09-29
+
+    [Fact]
+    public void PollReply_OnlyReportCounterChanged_IsNotAnUpdate()
+    {
+        var node = new ArtNetNode();
+        int updated = 0;
+        node.NodeUpdated += (_, _) => updated++;
+        for (int i = 1; i <= 5; i++)
+        {
+            var r = new ArtPollReplyPacket { ShortName = "GW", NodeReport = ArtPollReplyPacket.FormatNodeReport(ArtNetNodeReportCode.PowerOk, i) };
+            node.InjectDatagram(r.ToArray(), A);
+        }
+        Assert.Equal(0, updated);
+        Assert.Equal(5, node.Nodes[0].ReplyCount);
+        Assert.Contains("[0005]", node.Nodes[0].NodeReport); // the latest report is still stored
+
+        var changedCode = new ArtPollReplyPacket { ShortName = "GW", NodeReport = ArtPollReplyPacket.FormatNodeReport(ArtNetNodeReportCode.DmxError, 6) };
+        node.InjectDatagram(changedCode.ToArray(), A);
+        Assert.Equal(1, updated);
+    }
+
+    [Fact]
+    public async Task Stop_ForgetsMergeSources_KeepsLevels()
+    {
+        int port = 20000 + Random.Shared.Next(20000);
+        var node = new ArtNetNode(new ArtNetNodeSettings { Port = port, SendPolls = false, ReplyToPolls = false });
+        await node.StartAsync();
+        node.InjectDatagram(Dmx(new PortAddress(1), 1, 200, 200), A);
+        await node.StopAsync();
+        Assert.Equal(200, node.GetUniverse(new PortAddress(1))![1]);
+
+        await node.StartAsync();
+        ArtNetUniverseEventArgs? last = null;
+        node.UniverseChanged += (_, e) => last = e;
+        node.InjectDatagram(Dmx(new PortAddress(1), 1, 10, 10), B);
+        await node.StopAsync();
+        Assert.False(last!.Merging);
+        Assert.Equal(10, last.Data[0]);
+    }
+
+    [Fact]
+    public void ProtocolVersionBelow14_IsIgnoredButLogged()
+    {
+        var node = new ArtNetNode();
+        int changed = 0, logged = 0;
+        node.UniverseChanged += (_, _) => changed++;
+        node.PacketReceived += (_, _) => logged++;
+        node.InjectDatagram(new ArtDmxPacket { PortAddress = new PortAddress(1), Sequence = 1, Data = [1, 2], ProtocolVersion = 13 }.ToArray(), A);
+        Assert.Equal(0, changed);
+        Assert.Null(node.GetUniverse(new PortAddress(1)));
+        Assert.Equal(1, logged);
+
+        node.InjectDatagram(Dmx(new PortAddress(1), 1, 1, 2), A);
+        Assert.Equal(1, changed);
+    }
+
+    [Fact]
+    public async Task KeepAlive_RepeatsTheSentLength()
+    {
+        int rxPort = 20000 + Random.Shared.Next(20000);
+        var rx = new ArtNetNode(new ArtNetNodeSettings { Port = rxPort, SendPolls = false, ReplyToPolls = false });
+        var lengths = new System.Collections.Concurrent.ConcurrentQueue<int>();
+        rx.DmxReceived += (_, e) => lengths.Enqueue(e.Packet.Data.Length);
+        await rx.StartAsync();
+        var tx = new ArtNetNode(new ArtNetNodeSettings { Port = rxPort + 1, SendPolls = false, ReplyToPolls = false,
+            DmxKeepAlive = TimeSpan.FromMilliseconds(150) });
+        tx.Settings.StaticDmxTargets.Add(new IPEndPoint(IPAddress.Loopback, rxPort));
+        await tx.StartAsync();
+        try
+        {
+            await tx.SendDmxAsync(new PortAddress(1), new byte[24]);
+            await tx.SetChannelsAsync(new PortAddress(1), 30, new byte[] { 1, 2 }); // grows the frame to 32 channels
+            await Task.Delay(600);
+        }
+        finally
+        {
+            await tx.StopAsync();
+            await rx.StopAsync();
+        }
+        var seen = lengths.ToArray();
+        Assert.True(seen.Length >= 3, $"only {seen.Length} frames received");
+        Assert.Equal(24, seen[0]);
+        Assert.All(seen[1..], l => Assert.Equal(32, l));
+    }
 }

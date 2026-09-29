@@ -109,6 +109,20 @@ public sealed class ArtNetUniverse
     }
 
     /// <summary>
+    /// Forgets the merge sources (and any AcCancelMerge takeover) but keeps the last output, so the next ArtDmx is
+    /// treated as the only source. Used when the node stops.
+    /// </summary>
+    internal void ResetSources()
+    {
+        lock (_lock)
+        {
+            _sources.Clear();
+            _exclusive = null;
+            _cancelMergePending = false;
+        }
+    }
+
+    /// <summary>
     /// Applies an ArtDmx. Returns the merged output (a copy) or null when the packet was dropped.
     /// </summary>
     public byte[]? Apply(IPAddress from, ArtDmxPacket packet, out bool merging)
