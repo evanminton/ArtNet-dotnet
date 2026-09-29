@@ -51,7 +51,8 @@ public sealed class DmxPage : ContentPage
     private readonly Entry _outUniverse = Ui.Entry("1", "universe", 120);
     private bool _syncAfterSend;
     private DateTime _lastSend;
-    private bool _trailingSend;
+    private bool _levelsDirty;   // slider levels changed since the last send started
+    private bool _sendLoopRunning;
 
     public DmxPage(ArtNetService service)
     {
@@ -160,18 +161,23 @@ public sealed class DmxPage : ContentPage
                 var (first, last) = Channels();
                 for (int c = first; c <= last; c++) _output[c - 1] = v;
                 _outputView.Invalidate();
-                if (DateTime.UtcNow - _lastSend > TimeSpan.FromMilliseconds(22)) await SendAsync(status, physical);
-                else if (!_trailingSend)
+                // One send loop at a time, at most every 22 ms, running until no change is left unsent:
+                // a change made while a send is in flight is picked up by the next pass, so the final
+                // position of a drag is always sent.
+                _levelsDirty = true;
+                if (_sendLoopRunning) return;
+                _sendLoopRunning = true;
+                try
                 {
-                    // Throttled: send the latest levels once the interval has passed so the final position is not lost.
-                    _trailingSend = true;
-                    try
+                    while (_levelsDirty)
                     {
-                        await Task.Delay(25);
+                        var wait = TimeSpan.FromMilliseconds(22) - (DateTime.UtcNow - _lastSend);
+                        if (wait > TimeSpan.Zero) await Task.Delay(wait);
+                        _levelsDirty = false;
                         await SendAsync(status, physical);
                     }
-                    finally { _trailingSend = false; }
                 }
+                finally { _sendLoopRunning = false; }
             }
             catch (Exception ex) { status.Text = "⚠ " + ex.Message; }
         };
